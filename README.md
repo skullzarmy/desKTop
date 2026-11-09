@@ -95,4 +95,4 @@ This is free and unencumbered software released into the public domain under [Th
 
 ---
 
-<< a [FAFO~~lab~~](https://fafolab.xyz) joint >>
+<< a [FAFO~~lab~~](https://fafolab.xyz) joint • [@fafo_lab](https://x.com/fafo_lab) on X >>
