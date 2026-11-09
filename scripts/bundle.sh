@@ -4,8 +4,19 @@ set -e
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$DIR"
 
-echo "Building desKTop native macOS binary..."
-"$DIR/scripts/build.sh" --product desKTop
+BUILD_CONFIG="debug"
+if [[ "$*" == *"--release"* ]]; then
+    BUILD_CONFIG="release"
+fi
+
+echo "Building desKTop native macOS binary ($BUILD_CONFIG)..."
+if [ "$BUILD_CONFIG" = "release" ]; then
+    "$DIR/scripts/build.sh" --product desKTop -c release
+    BINARY="$DIR/.build/release/desKTop"
+else
+    "$DIR/scripts/build.sh" --product desKTop
+    BINARY="$DIR/.build/debug/desKTop"
+fi
 
 APP_DIR="$DIR/build/desKTop.app"
 CONTENTS_DIR="$APP_DIR/Contents"
@@ -16,7 +27,7 @@ rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 
 # Copy binary
-cp "$DIR/.build/debug/desKTop" "$MACOS_DIR/desKTop"
+cp "$BINARY" "$MACOS_DIR/desKTop"
 chmod +x "$MACOS_DIR/desKTop"
 
 # Copy resources, icons & branding
@@ -59,5 +70,13 @@ cat << 'EOF' > "$CONTENTS_DIR/Info.plist"
 </plist>
 EOF
 
-echo "✓ desKTop.app background accessory bundle generated at:"
+if [[ "$*" == *"--zip"* ]] || [ "$BUILD_CONFIG" = "release" ]; then
+    cd "$DIR/build"
+    rm -f desKTop.zip
+    zip -r -y desKTop.zip desKTop.app > /dev/null
+    cd "$DIR"
+    echo "✓ desKTop.zip generated at: $DIR/build/desKTop.zip"
+fi
+
+echo "✓ desKTop.app bundle generated at:"
 echo "  $APP_DIR"
