@@ -21,6 +21,7 @@ func runSuite(name: String, block: () async throws -> Void) async {
     }
 }
 
+// Phase 1 Tests
 await runSuite(name: "TezosAddressTests") {
     try TezosAddressTests.run()
 }
@@ -39,6 +40,19 @@ await runSuite(name: "UnifiedTokenTests") {
 
 await runSuite(name: "WalletRepositoryTests") {
     try await WalletRepositoryTests.run()
+}
+
+// Phase 2 Tests
+await runSuite(name: "IPFSGatewayManagerTests") {
+    try await IPFSGatewayManagerTests.run()
+}
+
+await runSuite(name: "MediaTypeDetectorTests") {
+    try MediaTypeDetectorTests.run()
+}
+
+await runSuite(name: "MediaVaultTests") {
+    try await MediaVaultTests.run()
 }
 
 print("\n==========================================")
