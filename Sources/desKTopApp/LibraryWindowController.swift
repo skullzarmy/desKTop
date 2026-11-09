@@ -46,7 +46,14 @@ public final class LibraryWindowController: NSWindowController, NSWindowDelegate
     }
 
     public func windowWillClose(_ notification: Notification) {
-        // Return strictly to .accessory policy when window is closed (Dock icon disappears)
-        NSApp.setActivationPolicy(.accessory)
+        // Return to .accessory policy when window is closed, unless Settings window is still open
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            let hasVisible = NSApp.windows.contains { w in
+                w.isVisible && w.canBecomeKey && w.level == .normal && !(w is NSPanel)
+            }
+            if !hasVisible {
+                NSApp.setActivationPolicy(.accessory)
+            }
+        }
     }
 }

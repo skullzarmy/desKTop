@@ -42,7 +42,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var popover: NSPopover!
     private let viewModel = MenuBarViewModel()
 
-    private let repository = WalletRepository()
+    let repository = WalletRepository()
     private let wallpaperService = StillWallpaperService()
     private let vault = MediaVault()
     private var canvasControllers: [String: DesktopCanvasWindowController] = [:]
@@ -157,6 +157,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             Task { @MainActor [weak self] in
                 guard let self = self, let current = self.viewModel.currentToken else { return }
                 await self.setTokenAsWallpaper(current)
+            }
+        }
+
+        // Return to accessory policy when all regular windows are closed
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                let hasVisibleWindows = NSApp.windows.contains { w in
+                    w.isVisible && w.canBecomeKey && w.level == .normal && !(w is NSPanel)
+                }
+                if !hasVisibleWindows {
+                    NSApp.setActivationPolicy(.accessory)
+                }
             }
         }
     }
@@ -386,11 +402,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 4), in: button)
     }
 
-    @objc private func openSettingsWindow() {
+    @objc func openSettingsWindow() {
         if popover.isShown {
             popover.performClose(nil)
         }
-        SettingsWindowController.shared.show(repository: repository)
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+
+        let showSettings = Selector(("showSettingsWindow:"))
+        let showPrefs = Selector(("showPreferencesWindow:"))
+
+        if !NSApp.sendAction(showSettings, to: nil, from: nil) {
+            _ = NSApp.sendAction(showPrefs, to: nil, from: nil)
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            if let window = NSApp.windows.first(where: {
+                $0.canBecomeKey && ($0.title.contains("Settings") || $0.title.contains("Preferences") || $0.identifier?.rawValue.contains("Settings") == true)
+            }) {
+                window.makeKeyAndOrderFront(nil)
+            }
+        }
     }
 
     @objc private func checkForUpdatesMenuClicked() {
@@ -659,7 +691,7 @@ struct desKTopApp: App {
 
     var body: some Scene {
         Settings {
-            EmptyView()
+            SettingsView(repository: appDelegate.repository)
         }
     }
 }
