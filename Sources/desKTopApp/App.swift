@@ -436,7 +436,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     @objc private func showAboutDialog() {
         let alert = NSAlert()
         alert.messageText = "desKTop"
-        alert.informativeText = "Version 1.0.0\n\nTurn your Mac desktop into a living Tezos art gallery.\n\nCreated by FAFOlab (a FAFOlab joint)\nhttps://fafolab.xyz\n\nOpen source under The Unlicense."
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.1"
+        alert.informativeText = "Version \(version)\n\nTurn your Mac desktop into a living Tezos art gallery.\n\na FAFOlab joint\nhttps://fafolab.xyz\n\nOpen source under The Unlicense."
         alert.alertStyle = .informational
         if let icon = NSApp.applicationIconImage {
             alert.icon = icon

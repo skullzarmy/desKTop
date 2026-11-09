@@ -69,7 +69,7 @@ public final class UpdateService: Sendable {
     public let repo = "skullzarmy/desKTop"
 
     public var currentVersion: String {
-        return Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
+        return Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.1"
     }
 
     public init() {}
@@ -186,7 +186,7 @@ public final class UpdateService: Sendable {
         rm -rf "\(currentBundlePath)"
         mv "\(newAppBundle.path)" "\(currentBundlePath)"
         xattr -cr "\(currentBundlePath)"
-        open -a "\(currentBundlePath)"
+        open "\(currentBundlePath)"
         rm -rf "\(extractDir.path)"
         """
 

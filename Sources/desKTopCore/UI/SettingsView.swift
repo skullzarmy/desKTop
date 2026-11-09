@@ -287,7 +287,7 @@ public struct SettingsView: View {
                         }
                     }
 
-                    Text("Created by FAFOlab (a FAFOlab joint)\nOpen source software released into the public domain under The Unlicense.")
+                    Text("a FAFOlab joint\nOpen source software released into the public domain under The Unlicense.")
                         .font(.caption2).foregroundColor(.secondary)
 
                     HStack(spacing: 14) {
