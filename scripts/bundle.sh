@@ -74,8 +74,18 @@ if [[ "$*" == *"--zip"* ]] || [ "$BUILD_CONFIG" = "release" ]; then
     cd "$DIR/build"
     rm -f desKTop.zip
     zip -r -y desKTop.zip desKTop.app > /dev/null
-    cd "$DIR"
     echo "✓ desKTop.zip generated at: $DIR/build/desKTop.zip"
+
+    echo "Creating desKTop.dmg with Applications shortcut..."
+    DMG_STAGING="$DIR/build/dmg_staging"
+    rm -rf "$DMG_STAGING" "$DIR/build/desKTop.dmg"
+    mkdir -p "$DMG_STAGING"
+    cp -R "$APP_DIR" "$DMG_STAGING/"
+    ln -s /Applications "$DMG_STAGING/Applications"
+    hdiutil create -volname "desKTop" -srcfolder "$DMG_STAGING" -ov -format UDZO "$DIR/build/desKTop.dmg" > /dev/null
+    rm -rf "$DMG_STAGING"
+    echo "✓ desKTop.dmg generated at: $DIR/build/desKTop.dmg"
+    cd "$DIR"
 fi
 
 echo "✓ desKTop.app bundle generated at:"

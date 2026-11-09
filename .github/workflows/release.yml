@@ -100,8 +100,18 @@ jobs:
 
           cd build
           zip -r -y ../desKTop.zip desKTop.app
+          
+          echo "Creating desKTop.dmg..."
+          DMG_STAGING="dmg_staging"
+          rm -rf "$DMG_STAGING" ../desKTop.dmg
+          mkdir -p "$DMG_STAGING"
+          cp -R desKTop.app "$DMG_STAGING/"
+          ln -s /Applications "$DMG_STAGING/Applications"
+          hdiutil create -volname "desKTop" -srcfolder "$DMG_STAGING" -ov -format UDZO ../desKTop.dmg
+          rm -rf "$DMG_STAGING"
+          
           cd ..
-          shasum -a 256 desKTop.zip > checksums.txt
+          shasum -a 256 desKTop.dmg desKTop.zip > checksums.txt
           cat checksums.txt
 
       - name: Upload Artifacts
@@ -109,6 +119,7 @@ jobs:
         with:
           name: desktop-macos-release
           path: |
+            desKTop.dmg
             desKTop.zip
             checksums.txt
 
