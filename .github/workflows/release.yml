@@ -38,80 +38,12 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Building release for tag $TAG"
 
-      - name: Swift Build Release
-        run: swift build -c release --arch arm64 --arch x86_64
-
-      - name: Bundle macOS Application (.app)
+      - name: Build & Package Release Bundle and DMG
         run: |
-          APP_DIR="build/desKTop.app"
-          CONTENTS_DIR="$APP_DIR/Contents"
-          MACOS_DIR="$CONTENTS_DIR/MacOS"
-          RESOURCES_DIR="$CONTENTS_DIR/Resources"
-
-          rm -rf build
-          mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
-
-          BINARY_PATH=$(find .build -name "desKTop" -type f -perm +111 | grep -E "Release|release" | head -n 1)
-          if [ -z "$BINARY_PATH" ]; then
-            echo "Binary desKTop not found!"
-            exit 1
-          fi
-          echo "Found binary at: $BINARY_PATH"
-          cp "$BINARY_PATH" "$MACOS_DIR/desKTop"
-          chmod +x "$MACOS_DIR/desKTop"
-
-          if [ -d "Resources" ]; then
-            cp -R Resources/* "$RESOURCES_DIR/" 2>/dev/null || true
-          fi
-          if [ -d "Sources/desKTopApp/Resources" ]; then
-            cp -R Sources/desKTopApp/Resources/* "$RESOURCES_DIR/" 2>/dev/null || true
-          fi
-
-          cat << 'EOF' > "$CONTENTS_DIR/Info.plist"
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-              <key>CFBundleExecutable</key>
-              <string>desKTop</string>
-              <key>CFBundleIconFile</key>
-              <string>AppIcon</string>
-              <key>CFBundleIdentifier</key>
-              <string>xyz.fafolab.desktop</string>
-              <key>CFBundleName</key>
-              <string>desKTop</string>
-              <key>CFBundlePackageType</key>
-              <string>APPL</string>
-              <key>CFBundleShortVersionString</key>
-              <string>1.0.0</string>
-              <key>CFBundleVersion</key>
-              <string>1</string>
-              <key>LSMinimumSystemVersion</key>
-              <string>14.0</string>
-              <key>LSUIElement</key>
-              <true/>
-              <key>NSHighResolutionCapable</key>
-              <true/>
-              <key>NSHumanReadableCopyright</key>
-              <string>Copyright © 2026 FAFOlab (a FAFOlab joint). The Unlicense.</string>
-          </dict>
-          </plist>
-          EOF
-
+          ./scripts/bundle.sh --release
           cd build
-          zip -r -y ../desKTop.zip desKTop.app
-          
-          echo "Creating desKTop.dmg..."
-          DMG_STAGING="dmg_staging"
-          rm -rf "$DMG_STAGING" ../desKTop.dmg
-          mkdir -p "$DMG_STAGING"
-          cp -R desKTop.app "$DMG_STAGING/"
-          ln -s /Applications "$DMG_STAGING/Applications"
-          hdiutil create -volname "desKTop" -srcfolder "$DMG_STAGING" -ov -format UDZO ../desKTop.dmg
-          rm -rf "$DMG_STAGING"
-          
+          shasum -a 256 desKTop.dmg desKTop.zip > ../checksums.txt
           cd ..
-          shasum -a 256 desKTop.dmg desKTop.zip > checksums.txt
           cat checksums.txt
 
       - name: Upload Artifacts
@@ -119,8 +51,8 @@ jobs:
         with:
           name: desktop-macos-release
           path: |
-            desKTop.dmg
-            desKTop.zip
+            build/desKTop.dmg
+            build/desKTop.zip
             checksums.txt
 
   publish-release:

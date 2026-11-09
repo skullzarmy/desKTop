@@ -17,10 +17,14 @@ codesign --force --deep --sign - "$APP_DIR"
 codesign --verify --verbose "$APP_DIR"
 echo "✓ Signature valid on disk"
 
-echo "==> 2. Generating Retina DMG background (dark canvas)..."
+echo "==> 2. Preparing Retina DMG background (dark canvas)..."
 TMP_BG_DIR=$(mktemp -d /tmp/dmg_bg_XXXXXX)
-python3 "$DIR/scripts/make_dmg_background.py" "$TMP_BG_DIR"
-tiffutil -cathidpicheck "$TMP_BG_DIR/bg.png" "$TMP_BG_DIR/bg@2x.png" -out "$TMP_BG_DIR/background.tiff"
+if [ -f "$DIR/Resources/Branding/background.tiff" ]; then
+    cp "$DIR/Resources/Branding/background.tiff" "$TMP_BG_DIR/background.tiff"
+else
+    python3 "$DIR/scripts/make_dmg_background.py" "$TMP_BG_DIR"
+    tiffutil -cathidpicheck "$TMP_BG_DIR/bg.png" "$TMP_BG_DIR/bg@2x.png" -out "$TMP_BG_DIR/background.tiff"
+fi
 
 echo "==> 3. Creating staging disk image..."
 hdiutil detach /Volumes/desKTop -force 2>/dev/null || true
@@ -45,7 +49,7 @@ if [ -f "$DIR/Resources/AppIcon.icns" ]; then
 fi
 
 echo "==> 5. Applying Finder window geometry and icon layout..."
-osascript << 'APPLESCRIPT'
+osascript << 'APPLESCRIPT' || true
 tell application "Finder"
     tell disk "desKTop"
         open
