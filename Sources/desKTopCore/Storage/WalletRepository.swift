@@ -344,7 +344,13 @@ public actor WalletRepository {
         case .created:
             return state.tokens.filter { $0.isCreated }
         case .collection(let contract, _):
-            let matching = state.tokens.filter { $0.contract.caseInsensitiveCompare(contract) == .orderedSame }
+            let matching: [UnifiedToken]
+            if contract.hasPrefix("fxhash:") {
+                let proj = String(contract.dropFirst(7)).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                matching = state.tokens.filter { $0.isFxhash && (($0.fxhashProjectName?.lowercased() == proj) || $0.name.lowercased().hasPrefix(proj)) }
+            } else {
+                matching = state.tokens.filter { $0.contract.caseInsensitiveCompare(contract) == .orderedSame }
+            }
             return matching.isEmpty ? state.tokens : matching
         case .customGallery(let gid, _):
             guard let g = state.galleries.first(where: { $0.id == gid }), !g.tokenIds.isEmpty else {

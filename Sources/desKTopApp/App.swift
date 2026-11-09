@@ -46,6 +46,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var rotationScheduler: RotationScheduler?
     private var rotationObserver: NSObjectProtocol?
     private var nextWallpaperObserver: NSObjectProtocol?
+    private var isRotating: Bool = false
+    private var pendingRotationChangeTask: Task<Void, Never>?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Configure global URLCache with 100 MB memory and 1 GB disk cache for high-speed artwork & GIF caching
@@ -94,9 +96,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                     self.rotationScheduler?.interval = newInterval
                     self.rotationScheduler?.isPaused = paused
 
-                    // Advance immediately to next wallpaper from newly selected collection/scope
+                    // Coalesce / debounce rapid sequential updates (e.g. target change + unpause)
+                    // so we do not launch multiple concurrent wallpaper swaps
+                    self.pendingRotationChangeTask?.cancel()
                     if !paused {
-                        await self.rotateNext()
+                        self.pendingRotationChangeTask = Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: 300_000_000) // 300ms debounce
+                            guard !Task.isCancelled else { return }
+                            await self.rotateNext()
+                        }
                     }
                 }
             }
@@ -315,12 +323,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 self.viewModel.currentToken = token
                 self.viewModel.statusMessage = "Live on \(screen.localizedName)"
             }
+
+            // Always reset the timer to the FULL interval whenever a new wallpaper is applied.
+            // This prevents unexpected swaps 30 seconds after setting!
+            self.rotationScheduler?.restartTimer()
         } catch {
             self.viewModel.statusMessage = "Error: \(error.localizedDescription)"
         }
     }
 
     private func rotateNext() async {
+        guard !isRotating else { return }
+        isRotating = true
+        defer { isRotating = false }
+
         let isPaused = await repository.isRotationPaused()
         if isPaused { return }
 

@@ -271,4 +271,107 @@ public struct UnifiedToken: Identifiable, Hashable, Codable, Sendable {
 
         return .unknown
     }
+
+    // MARK: - fxhash Project Helpers
+
+    /// Whether this token is an fxhash generative token across all 3 generations
+    public var isFxhash: Bool {
+        return mediaCategory == .fxhash ||
+               rawMetadata?["symbol"]?.uppercased() == "GENTK" ||
+               (artifactUri ?? "").contains("fxhash=") ||
+               Self.isFxhashContract(contract)
+    }
+
+    public static func isFxhashContract(_ address: String) -> Bool {
+        let lower = address.lowercased()
+        return lower == "kt1kea8z6vwxdjrvqtmraedvzsvxat3khace" ||
+               lower == "kt1u6ehmnxjtkvawj4thczg4fsdahc21ssvi" ||
+               lower == "kt1u6ehmng3rqgzgwrjvm31tymgwgymo61gk" ||
+               lower == "kt1efsnuqwlawdd3o4pvfux1cah5gmdtrrvr" ||
+               lower == "kt1efsnuqwlacdq3maa3gkpjtrmmqqes2nuv"
+    }
+
+    /// The fxhash generation variant (v1 Vanilla, v2, v3 fx(params))
+    public var fxhashVersion: String? {
+        guard isFxhash else { return nil }
+        let lower = contract.lowercased()
+        if lower.contains("kea8z") { return "v1 Vanilla" }
+        if lower.contains("u6ehm") { return "v2" }
+        if lower.contains("efsnu") { return "v3 (fx(params))" }
+        return "fxhash"
+    }
+
+    /// The extracted project/collection name for an fxhash token (e.g. "Willie's Nightmare Cash Grab", "DOOMKATS")
+    public var fxhashProjectName: String? {
+        guard isFxhash else { return nil }
+        if let proj = rawMetadata?["projectName"] ?? rawMetadata?["project_name"], !proj.isEmpty {
+            return proj
+        }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed == "[WAITING TO BE SIGNED]" {
+            return "fxhash (Pending Reveal)"
+        }
+        if let hashRange = trimmed.range(of: " #", options: .backwards) {
+            let candidate = String(trimmed[..<hashRange.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !candidate.isEmpty {
+                return candidate
+            }
+        }
+        return nil
+    }
+
+    /// The extracted iteration string for an fxhash token (e.g. "284")
+    public var fxhashIteration: String? {
+        guard isFxhash else { return nil }
+        if let iter = rawMetadata?["iteration"], !iter.isEmpty {
+            return iter
+        }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let hashRange = trimmed.range(of: " #", options: .backwards) {
+            let candidate = String(trimmed[hashRange.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if let slashRange = candidate.range(of: "/") {
+                return String(candidate[..<slashRange.lowerBound])
+            }
+            return candidate
+        }
+        return nil
+    }
+
+    /// The issuer/project ID on fxhash & objkt (e.g. "19634", "30166")
+    public var fxhashProjectId: String? {
+        return rawMetadata?["issuer_id"] ?? rawMetadata?["projectId"] ?? rawMetadata?["project_id"]
+    }
+
+    /// Canonical objkt.com token URL (e.g. https://objkt.com/tokens/fxhash/1611331)
+    public var objktTokenURL: URL? {
+        if isFxhash {
+            return URL(string: "https://objkt.com/tokens/fxhash/\(tokenId)")
+        }
+        return URL(string: "https://objkt.com/tokens/\(contract)/\(tokenId)")
+    }
+
+    /// Canonical objkt.com collection or project URL (e.g. https://objkt.com/collections/fxhash/projects/19634)
+    public func objktCollectionURL(projectId: String? = nil) -> URL? {
+        let pId = projectId ?? fxhashProjectId
+        if isFxhash, let pId = pId, !pId.isEmpty {
+            return URL(string: "https://objkt.com/collections/fxhash/projects/\(pId)")
+        }
+        return URL(string: "https://objkt.com/collections/\(contract)")
+    }
+
+    /// Canonical fxhash.xyz gentk URL
+    public var fxhashGentkURL: URL? {
+        guard isFxhash else { return nil }
+        return URL(string: "https://www.fxhash.xyz/gentk/\(tokenId)")
+    }
+
+    /// Canonical fxhash.xyz project URL
+    public func fxhashProjectURL(projectId: String? = nil) -> URL? {
+        guard isFxhash else { return nil }
+        let pId = projectId ?? fxhashProjectId
+        if let pId = pId, !pId.isEmpty {
+            return URL(string: "https://www.fxhash.xyz/generative/slug/\(pId)")
+        }
+        return URL(string: "https://www.fxhash.xyz")
+    }
 }

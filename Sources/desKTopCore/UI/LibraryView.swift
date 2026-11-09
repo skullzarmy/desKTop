@@ -66,8 +66,23 @@ public struct CollectionContractItem: Identifiable, Hashable {
     public let contract: String
     public let displayName: String
     public let count: Int
+    public let fxhashVersion: String?
+
+    public init(contract: String, displayName: String, count: Int, fxhashVersion: String? = nil) {
+        self.contract = contract
+        self.displayName = displayName
+        self.count = count
+        self.fxhashVersion = fxhashVersion
+    }
+
+    public var isFxhash: Bool {
+        return contract.hasPrefix("fxhash:")
+    }
 
     public var shortContract: String {
+        if let v = fxhashVersion {
+            return "fxhash \(v)"
+        }
         guard contract.count > 10 else { return contract }
         let p = contract.prefix(6)
         let s = contract.suffix(4)
@@ -82,7 +97,8 @@ public struct LibraryView: View {
     @State private var galleries: [DesktopGallery] = []
     @State private var objktCurations: [ObjktGallerySummary] = []
     @State private var collectionNames: [String: String] = [:]
-    @State private var artistProfiles: [String: ArtistProfile] = [:]
+    @State private var artistProfiles: [String: ArtistProfile] = ArtistResolver.loadCachedProfiles()
+    @State private var fxhashProjects: [String: FxhashProjectInfo] = FxhashResolver.loadCachedProjects()
 
     @State private var selectedSidebarItem: LibrarySidebarItem = .allArt
     @State private var selectedToken: UnifiedToken?
@@ -186,8 +202,13 @@ public struct LibraryView: View {
             }
         case .objktCuration(let cid):
             baseTokens = tokens.filter { $0.rawMetadata?["curationId"] == cid }
-        case .collection(let contract):
-            baseTokens = tokens.filter { $0.contract.lowercased() == contract.lowercased() }
+        case .collection(let key):
+            if key.hasPrefix("fxhash:") {
+                let targetProj = String(key.dropFirst(7)).lowercased()
+                baseTokens = tokens.filter { $0.isFxhash && (resolvedProjectName(for: $0).lowercased() == targetProj) }
+            } else {
+                baseTokens = tokens.filter { $0.contract.lowercased() == key.lowercased() }
+            }
         }
 
         // 2. Filter by search text
@@ -249,9 +270,26 @@ public struct LibraryView: View {
         return baseTokens
     }
 
-    /// Derived list of unique contracts with token counts dynamically scoped to the current context
+    public func resolvedProjectName(for token: UnifiedToken) -> String {
+        if let info = fxhashProjects[token.id], let p = info.projectName, !p.isEmpty {
+            return p
+        }
+        return token.fxhashProjectName ?? "fxhash (\(token.fxhashVersion ?? "Generative"))"
+    }
+
+    public func collectionTokenMatches(token: UnifiedToken, key: String) -> Bool {
+        if key.hasPrefix("fxhash:") {
+            let targetProj = String(key.dropFirst(7)).lowercased()
+            return token.isFxhash && (resolvedProjectName(for: token).lowercased() == targetProj)
+        }
+        return token.contract.caseInsensitiveCompare(key) == .orderedSame
+    }
+
+    /// Derived list of unique collections/projects with token counts dynamically scoped to the current context
     private var uniqueCollections: [CollectionContractItem] {
-        var counts: [String: Int] = [:]
+        var normalCounts: [String: Int] = [:]
+        var fxhashCounts: [String: (count: Int, version: String?)] = [:]
+
         let scopedTokens: [UnifiedToken]
         switch selectedSidebarItem {
         case .created:
@@ -272,16 +310,43 @@ public struct LibraryView: View {
         }
 
         for t in scopedTokens {
-            counts[t.contract, default: 0] += 1
+            if t.isFxhash {
+                let projName = resolvedProjectName(for: t)
+                let current = fxhashCounts[projName] ?? (0, t.fxhashVersion)
+                fxhashCounts[projName] = (current.count + 1, t.fxhashVersion ?? current.version)
+            } else {
+                normalCounts[t.contract, default: 0] += 1
+            }
         }
 
-        return counts.map { contract, count in
-            CollectionContractItem(contract: contract, displayName: resolvedName(for: contract), count: count)
+        var items: [CollectionContractItem] = []
+
+        // 1. FA2 & standard NFT contracts
+        for (contract, count) in normalCounts {
+            items.append(CollectionContractItem(
+                contract: contract,
+                displayName: resolvedName(for: contract),
+                count: count
+            ))
         }
-        .sorted { $0.count > $1.count }
+
+        // 2. fxhash Generative Projects (differentiated into their true projects!)
+        for (projName, val) in fxhashCounts {
+            items.append(CollectionContractItem(
+                contract: "fxhash:\(projName)",
+                displayName: projName,
+                count: val.count,
+                fxhashVersion: val.version
+            ))
+        }
+
+        return items.sorted { $0.count > $1.count }
     }
 
     public func resolvedName(for contract: String) -> String {
+        if contract.hasPrefix("fxhash:") {
+            return String(contract.dropFirst(7))
+        }
         let lower = contract.lowercased()
         if let name = collectionNames[contract] ?? collectionNames[lower] {
             return name
@@ -501,19 +566,25 @@ public struct LibraryView: View {
             }
             .inspector(isPresented: $isInspectorPresented) {
                 if let token = selectedToken {
+                    let colKey = token.isFxhash ? "fxhash:\(resolvedProjectName(for: token))" : token.contract
+                    let colDisplay = token.isFxhash ? resolvedProjectName(for: token) : resolvedName(for: token.contract)
+                    let colCount = tokens.filter { collectionTokenMatches(token: $0, key: colKey) }.count
+                    let isColRotating: Bool = {
+                        if case .collection(let activeContract, _) = activeRotationTarget {
+                            return activeContract.caseInsensitiveCompare(colKey) == .orderedSame
+                        }
+                        return false
+                    }()
+
                     TokenInspectorView(
                         token: token,
-                        collectionName: resolvedName(for: token.contract),
-                        collectionTokensCount: tokens.filter { $0.contract.caseInsensitiveCompare(token.contract) == .orderedSame }.count,
+                        collectionName: colDisplay,
+                        collectionTokensCount: colCount,
                         artistProfile: token.creators.first.flatMap { artistProfile(for: $0) },
                         artistDisplayName: token.creators.first.map { artistDisplayName(for: $0) } ?? (token.creators.first ?? "Unknown"),
+                        fxhashProjectInfo: fxhashProjects[token.id],
                         isLiveOnDesktop: currentWallpaperTokenId == token.tokenId,
-                        isCollectionRotating: {
-                            if case .collection(let activeContract, _) = activeRotationTarget {
-                                return activeContract.caseInsensitiveCompare(token.contract) == .orderedSame
-                            }
-                            return false
-                        }(),
+                        isCollectionRotating: isColRotating,
                         galleries: galleries,
                         matteMode: $matteMode,
                         customHex: $customHex,
@@ -522,7 +593,7 @@ public struct LibraryView: View {
                             onSetWallpaper(token)
                         },
                         onRotateCollection: {
-                            startRotatingCurrentScope(.collection(contract: token.contract, displayName: resolvedName(for: token.contract)))
+                            startRotatingCurrentScope(.collection(contract: colKey, displayName: colDisplay))
                         },
                         onAddToGallery: { gid in
                             Task {
@@ -626,9 +697,10 @@ public struct LibraryView: View {
                         spacing: 14
                     ) {
                         ForEach(displayedTokens) { token in
+                            let cardColName = token.isFxhash ? resolvedProjectName(for: token) : resolvedName(for: token.contract)
                             TokenCardView(
                                 token: token,
-                                collectionName: resolvedName(for: token.contract),
+                                collectionName: cardColName,
                                 artistName: token.creators.first.map { artistDisplayName(for: $0) } ?? "",
                                 isSelected: selectedToken?.id == token.id,
                                 isLiveOnDesktop: currentWallpaperTokenId == token.tokenId,
@@ -646,8 +718,9 @@ public struct LibraryView: View {
                                         await reloadData()
                                     }
                                 },
-                                onFilterByCollection: { contract in
-                                    selectedSidebarItem = .collection(contract)
+                                onFilterByCollection: { _ in
+                                    let key = token.isFxhash ? "fxhash:\(resolvedProjectName(for: token))" : token.contract
+                                    selectedSidebarItem = .collection(key)
                                 },
                                 onRemoveFromCurrentGallery: {
                                     if case .customGallery(let gid) = selectedSidebarItem {
@@ -880,7 +953,6 @@ public struct LibraryView: View {
             try? await repository.setActiveRotationTarget(target)
             try? await repository.setRotationPaused(false)
             await reloadData()
-            NotificationCenter.default.post(name: .didRequestNextWallpaper, object: nil)
         }
     }
 
@@ -963,7 +1035,7 @@ public struct LibraryView: View {
 
                         CollectionCardView(
                             item: col,
-                            previewTokens: tokens.filter { $0.contract.caseInsensitiveCompare(col.contract) == .orderedSame }.prefix(4),
+                            previewTokens: tokens.filter { collectionTokenMatches(token: $0, key: col.contract) }.prefix(4),
                             isRotating: isRotating,
                             onSelect: {
                                 selectedSidebarItem = .collection(col.contract)
@@ -1271,6 +1343,7 @@ public struct LibraryView: View {
         self.rotationInterval = RotationInterval(rawValue: intervalSec) ?? .fiveMinutes
         resolveTopCollections()
         resolveArtists()
+        resolveFxhashProjects()
     }
 
     private func resolveTopCollections() {
@@ -1291,6 +1364,17 @@ public struct LibraryView: View {
             let resolved = await ArtistResolver.shared.resolveArtists(for: creators)
             await MainActor.run {
                 self.artistProfiles.merge(resolved) { _, new in new }
+            }
+        }
+    }
+
+    private func resolveFxhashProjects() {
+        let fxTokens = tokens.filter { $0.isFxhash }
+        guard !fxTokens.isEmpty else { return }
+        Task {
+            let resolved = await FxhashResolver.shared.resolveProjects(for: fxTokens)
+            await MainActor.run {
+                self.fxhashProjects.merge(resolved) { _, new in new }
             }
         }
     }
@@ -1525,7 +1609,7 @@ struct TokenCardView: View {
                 ZStack(alignment: .bottomTrailing) {
                     Color.black.opacity(0.15)
 
-                    ArtworkThumbnailView(token: token, contentMode: .fill)
+                    ArtworkThumbnailView(token: token, contentMode: .fill, isHovered: isHovered)
                         .frame(width: geo.size.width, height: geo.size.height)
                         .clipped()
 
@@ -1585,10 +1669,19 @@ struct TokenCardView: View {
 
             // Metadata info & collection link
             VStack(alignment: .leading, spacing: 2) {
-                Text(token.name)
-                    .font(.subheadline)
-                    .fontWeight(.semibold)
-                    .lineLimit(1)
+                HStack(spacing: 4) {
+                    Text(token.name)
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                        .lineLimit(1)
+
+                    if !token.name.contains("#") {
+                        Text("#\(token.tokenId)")
+                            .font(.system(size: 10, weight: .regular))
+                            .foregroundColor(.secondary.opacity(0.8))
+                            .lineLimit(1)
+                    }
+                }
 
                 if !artistName.isEmpty {
                     Text("by \(artistName)")
@@ -1679,7 +1772,12 @@ struct TokenCardView: View {
 // MARK: - In-Memory Image Cache
 
 final class ImageMemoryCache: @unchecked Sendable {
-    nonisolated(unsafe) static let shared = NSCache<NSURL, NSImage>()
+    nonisolated(unsafe) static let shared: NSCache<NSURL, NSImage> = {
+        let cache = NSCache<NSURL, NSImage>()
+        cache.countLimit = 150
+        cache.totalCostLimit = 120 * 1024 * 1024 // 120MB
+        return cache
+    }()
 }
 
 // MARK: - Native Animated GIF Player View
@@ -1704,7 +1802,6 @@ public struct AppKitGIFRepresentable: NSViewRepresentable {
         let view = NonExpandingImageView()
         view.imageScaling = .scaleProportionallyUpOrDown
         view.animates = true
-        view.canDrawSubviewsIntoLayer = true
         view.wantsLayer = true
         view.layer?.masksToBounds = true
         view.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -1724,6 +1821,8 @@ public struct AppKitGIFRepresentable: NSViewRepresentable {
     public func updateNSView(_ nsView: NSImageView, context: Context) {
         if nsView.image !== image {
             nsView.image = image
+        }
+        if !nsView.animates {
             nsView.animates = true
         }
     }
@@ -1732,20 +1831,28 @@ public struct AppKitGIFRepresentable: NSViewRepresentable {
 public struct AnimatedGIFView: View {
     let url: URL?
     let contentMode: ContentMode
+    let animates: Bool
 
     @State private var image: NSImage?
     @State private var isLoading: Bool = false
     @State private var hasFailed: Bool = false
 
-    public init(url: URL?, contentMode: ContentMode = .fill) {
+    public init(url: URL?, contentMode: ContentMode = .fill, animates: Bool = false) {
         self.url = url
         self.contentMode = contentMode
+        self.animates = animates
     }
 
     public var body: some View {
         ZStack {
             if let image = image {
-                AppKitGIFRepresentable(image: image, contentMode: contentMode)
+                if animates {
+                    AppKitGIFRepresentable(image: image, contentMode: contentMode)
+                } else {
+                    Image(nsImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: contentMode)
+                }
             } else if isLoading {
                 ZStack {
                     Color.secondary.opacity(0.08)
@@ -1813,10 +1920,14 @@ public struct AnimatedGIFView: View {
 public struct ArtworkThumbnailView: View {
     let token: UnifiedToken
     let contentMode: ContentMode
+    var isHovered: Bool = false
+    var shouldAnimate: Bool = false
 
-    public init(token: UnifiedToken, contentMode: ContentMode = .fill) {
+    public init(token: UnifiedToken, contentMode: ContentMode = .fill, isHovered: Bool = false, shouldAnimate: Bool = false) {
         self.token = token
         self.contentMode = contentMode
+        self.isHovered = isHovered
+        self.shouldAnimate = shouldAnimate
     }
 
     private var targetURL: URL? {
@@ -1827,7 +1938,7 @@ public struct ArtworkThumbnailView: View {
 
     public var body: some View {
         if token.mediaCategory == .animatedImage, let url = targetURL {
-            AnimatedGIFView(url: url, contentMode: contentMode)
+            AnimatedGIFView(url: url, contentMode: contentMode, animates: shouldAnimate || isHovered)
                 .clipped()
         } else if let url = targetURL {
             AsyncImage(url: url) { phase in
@@ -1886,6 +1997,7 @@ struct TokenInspectorView: View {
     let collectionTokensCount: Int
     let artistProfile: ArtistProfile?
     let artistDisplayName: String
+    let fxhashProjectInfo: FxhashProjectInfo?
     let isLiveOnDesktop: Bool
     let isCollectionRotating: Bool
     let galleries: [DesktopGallery]
@@ -1947,16 +2059,39 @@ struct TokenInspectorView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 // Large Preview
-                ArtworkThumbnailView(token: token, contentMode: .fit)
+                ArtworkThumbnailView(token: token, contentMode: .fit, shouldAnimate: true)
                     .frame(maxWidth: .infinity, maxHeight: 260)
                     .background(Color.black.opacity(0.15))
                     .cornerRadius(8)
 
                 // Title
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: 4) {
                     Text(token.name)
                         .font(.title2)
                         .fontWeight(.bold)
+
+                    if token.isFxhash {
+                        HStack(spacing: 6) {
+                            if let version = token.fxhashVersion {
+                                Text("fxhash \(version)")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(Color.secondary.opacity(0.12))
+                                    .cornerRadius(4)
+                            }
+                            if let iter = fxhashProjectInfo?.iteration ?? token.fxhashIteration {
+                                Text("Iteration #\(iter)")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            if let pId = fxhashProjectInfo?.issuerId ?? token.fxhashProjectId {
+                                Text("Project #\(pId)")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary.opacity(0.8))
+                            }
+                        }
+                    }
                 }
 
                 // Verified Artist Identity Card
@@ -2081,11 +2216,18 @@ struct TokenInspectorView: View {
                 // Collection & 1-Click Desktop Rotation
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
-                        Image(systemName: "folder.fill")
+                        Image(systemName: token.isFxhash ? "sparkles.rectangle.stack.fill" : "folder.fill")
                             .foregroundColor(.accentColor)
-                        Text(collectionName)
-                            .font(.headline)
-                            .lineLimit(1)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(collectionName)
+                                .font(.headline)
+                                .lineLimit(1)
+                            if token.isFxhash, let v = token.fxhashVersion {
+                                Text("fxhash Generative Project • \(v)")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
                         Spacer()
                         Text("\(collectionTokensCount) artworks")
                             .font(.caption2)
@@ -2095,7 +2237,7 @@ struct TokenInspectorView: View {
                     Button(action: onRotateCollection) {
                         HStack(spacing: 6) {
                             Image(systemName: isCollectionRotating ? "checkmark.circle.fill" : "play.fill")
-                            Text(isCollectionRotating ? "Rotating Collection on Desktop" : "Rotate Collection on Desktop")
+                            Text(isCollectionRotating ? "Rotating on Desktop" : (token.isFxhash ? "Rotate Project on Desktop" : "Rotate Collection on Desktop"))
                                 .fontWeight(.semibold)
                         }
                         .frame(maxWidth: .infinity)
@@ -2104,9 +2246,12 @@ struct TokenInspectorView: View {
                     .tint(isCollectionRotating ? Color.green : Color.accentColor)
                     .controlSize(.regular)
 
-                    Button(action: { onFilterByCollection(token.contract) }) {
+                    Button(action: {
+                        let filterKey = token.isFxhash ? "fxhash:\(collectionName)" : token.contract
+                        onFilterByCollection(filterKey)
+                    }) {
                         HStack(spacing: 4) {
-                            Text("Browse all \(collectionTokensCount) artworks")
+                            Text(token.isFxhash ? "Browse all \(collectionTokensCount) project pieces" : "Browse all \(collectionTokensCount) artworks")
                             Image(systemName: "arrow.right")
                         }
                         .font(.caption)
@@ -2182,26 +2327,68 @@ struct TokenInspectorView: View {
                 // Direct Marketplace Links
                 Divider()
 
-                HStack(spacing: 8) {
-                    Button(action: {
-                        if let url = URL(string: "https://objkt.com/tokens/\(token.contract)/\(token.tokenId)") {
-                            NSWorkspace.shared.open(url)
-                        }
-                    }) {
-                        Label("Token on objkt", systemImage: "arrow.up.right.square")
-                            .font(.caption)
-                    }
-                    .buttonStyle(.link)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Marketplace & Explorer")
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                        .foregroundColor(.secondary)
 
-                    Button(action: {
-                        if let url = URL(string: "https://objkt.com/collections/\(token.contract)") {
-                            NSWorkspace.shared.open(url)
+                    if token.isFxhash {
+                        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 6) {
+                            if let url = token.objktTokenURL {
+                                Button(action: { NSWorkspace.shared.open(url) }) {
+                                    Label("Token on objkt", systemImage: "arrow.up.right.square")
+                                        .font(.caption)
+                                }
+                                .buttonStyle(.link)
+                            }
+                            if let url = token.fxhashGentkURL {
+                                Button(action: { NSWorkspace.shared.open(url) }) {
+                                    Label("Gentk on fxhash", systemImage: "sparkles")
+                                        .font(.caption)
+                                }
+                                .buttonStyle(.link)
+                            }
+                            if let pId = fxhashProjectInfo?.issuerId ?? token.fxhashProjectId,
+                               let url = token.objktCollectionURL(projectId: pId) {
+                                Button(action: { NSWorkspace.shared.open(url) }) {
+                                    Label("Project on objkt", systemImage: "folder")
+                                        .font(.caption)
+                                }
+                                .buttonStyle(.link)
+                            }
+                            if let pId = fxhashProjectInfo?.issuerId ?? token.fxhashProjectId,
+                               let url = token.fxhashProjectURL(projectId: pId) {
+                                Button(action: { NSWorkspace.shared.open(url) }) {
+                                    Label("Project on fxhash", systemImage: "cube")
+                                        .font(.caption)
+                                }
+                                .buttonStyle(.link)
+                            }
                         }
-                    }) {
-                        Label("Collection on objkt", systemImage: "arrow.up.right.square")
-                            .font(.caption)
+                    } else {
+                        HStack(spacing: 12) {
+                            Button(action: {
+                                if let url = token.objktTokenURL {
+                                    NSWorkspace.shared.open(url)
+                                }
+                            }) {
+                                Label("Token on objkt", systemImage: "arrow.up.right.square")
+                                    .font(.caption)
+                            }
+                            .buttonStyle(.link)
+
+                            Button(action: {
+                                if let url = token.objktCollectionURL() {
+                                    NSWorkspace.shared.open(url)
+                                }
+                            }) {
+                                Label("Collection on objkt", systemImage: "folder")
+                                    .font(.caption)
+                            }
+                            .buttonStyle(.link)
+                        }
                     }
-                    .buttonStyle(.link)
                 }
 
                 if let desc = token.description, !desc.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {

@@ -23,6 +23,9 @@ chmod +x "$MACOS_DIR/desKTop"
 if [ -d "$DIR/Resources" ]; then
     cp -R "$DIR/Resources/"* "$RESOURCES_DIR/"
 fi
+if [ -d "$DIR/Sources/desKTopApp/Resources" ]; then
+    cp -R "$DIR/Sources/desKTopApp/Resources/"* "$RESOURCES_DIR/"
+fi
 
 # Create Info.plist with LSUIElement to completely prevent Dock icon
 cat << 'EOF' > "$CONTENTS_DIR/Info.plist"

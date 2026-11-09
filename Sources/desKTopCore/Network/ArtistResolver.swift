@@ -93,22 +93,41 @@ public actor ArtistResolver {
     private var cache: [String: ArtistProfile] = [:]
     private var cacheFileURL: URL?
 
-    public init(session: URLSession = .shared) {
-        self.session = session
+    /// Synchronously loads all cached artist profiles from persistent disk or application bundle
+    public static func loadCachedProfiles() -> [String: ArtistProfile] {
+        var profiles: [String: ArtistProfile] = [:]
 
-        // Load persistent cache from Application Support
+        // 1. Try bundled cache in Resources
+        if let bundleURL = Bundle.main.url(forResource: "artists_cache", withExtension: "json"),
+           let data = try? Data(contentsOf: bundleURL),
+           let loaded = try? JSONDecoder().decode([String: ArtistProfile].self, from: data) {
+            for (k, v) in loaded {
+                profiles[k.lowercased()] = v
+            }
+        }
+
+        // 2. Try persistent cache in Application Support
         if let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
-            let dir = appSupport.appendingPathComponent("desKTop", isDirectory: true)
-            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            let fileURL = dir.appendingPathComponent("artists_cache.json")
-            self.cacheFileURL = fileURL
-
+            let fileURL = appSupport.appendingPathComponent("desKTop/artists_cache.json")
             if let data = try? Data(contentsOf: fileURL),
                let loaded = try? JSONDecoder().decode([String: ArtistProfile].self, from: data) {
                 for (k, v) in loaded {
-                    self.cache[k.lowercased()] = v
+                    profiles[k.lowercased()] = v
                 }
             }
+        }
+
+        return profiles
+    }
+
+    public init(session: URLSession = .shared) {
+        self.session = session
+        self.cache = Self.loadCachedProfiles()
+
+        if let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            let dir = appSupport.appendingPathComponent("desKTop", isDirectory: true)
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            self.cacheFileURL = dir.appendingPathComponent("artists_cache.json")
         }
     }
 
