@@ -275,6 +275,81 @@ public actor ObjktClient {
         return tokens.compactMap { parseObjktToken(from: $0) }
     }
 
+    /// Fetches tokens for an fxhash generative token project by matching the project title pattern
+    public func fetchFxhashProjectTokens(projectName: String, limit: Int = 200, offset: Int = 0) async throws -> [UnifiedToken] {
+        let fxContracts = [
+            "KT1KEa8z6vWXDJrVqtMrAeDVzsvxat3kHaCE",
+            "KT1U6EHmNxJTkvaWJ4ThczG4FSDaHC21ssvi",
+            "KT1U6EHmng3rqGzgWRjVm31tYmGwgyMo61gk",
+            "KT1EfsNuqwLAWDd3o4pvfUx1CAh5GMdTrRvr",
+            "KT1EfsNuqwLACdq3mAA3gkpjTrMmqqeS2nuv"
+        ]
+        let pattern = "\(projectName) #%"
+        let query = """
+        query GetFxhashProjectTokens($contracts: [String!]!, $pattern: String!, $limit: Int!, $offset: Int!) {
+          token(
+            where: { fa_contract: { _in: $contracts }, name: { _ilike: $pattern } },
+            limit: $limit,
+            offset: $offset,
+            order_by: { token_id: asc }
+          ) {
+            fa_contract
+            token_id
+            name
+            description
+            mime
+            artifact_uri
+            display_uri
+            thumbnail_uri
+            supply
+            decimals
+            creators {
+              holder {
+                address
+                alias
+              }
+            }
+          }
+        }
+        """
+
+        let payload: [String: Any] = [
+            "query": query,
+            "variables": [
+                "contracts": fxContracts,
+                "pattern": pattern,
+                "limit": limit,
+                "offset": offset
+            ]
+        ]
+
+        let data = try await executeGraphQL(payload: payload)
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let dataDict = json["data"] as? [String: Any],
+              let tokens = dataDict["token"] as? [[String: Any]] else {
+            return []
+        }
+
+        return tokens.compactMap { parseObjktToken(from: $0) }
+    }
+
+    /// Fetches all tokens in a collection or fxhash project (up to limit)
+    public func fetchEntireCollection(key: String, limit: Int = 250) async throws -> [UnifiedToken] {
+        if key.hasPrefix("fxhash:") {
+            let projectName = String(key.dropFirst(7)).trimmingCharacters(in: .whitespacesAndNewlines)
+            return try await fetchFxhashProjectTokens(projectName: projectName, limit: limit)
+        } else {
+            guard let address = TezosAddress(key) else { return [] }
+            let tokens = try await fetchCollectionTokens(contract: address, limit: limit)
+            if !tokens.isEmpty {
+                return tokens
+            }
+            // Fallback to TzKT if objkt returned empty
+            let tzkt = TzKTClient()
+            return (try? await tzkt.fetchContractTokens(contract: address, limit: limit)) ?? []
+        }
+    }
+
     // MARK: - Private Helpers
 
     private func executeGraphQL(payload: [String: Any]) async throws -> Data {

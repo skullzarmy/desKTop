@@ -100,6 +100,11 @@ public struct LibraryView: View {
     @State private var artistProfiles: [String: ArtistProfile] = ArtistResolver.loadCachedProfiles()
     @State private var fxhashProjects: [String: FxhashProjectInfo] = FxhashResolver.loadCachedProjects()
 
+    // Mixed Context Collection Scope (In Library vs Entire Collection on-chain)
+    @State private var collectionScope: CollectionRotationScope = .inLibrary
+    @State private var entireCollectionTokens: [String: [UnifiedToken]] = [:]
+    @State private var isFetchingEntireCollection: Bool = false
+
     @State private var selectedSidebarItem: LibrarySidebarItem = .allArt
     @State private var selectedToken: UnifiedToken?
     @State private var isInspectorPresented: Bool = false
@@ -203,11 +208,14 @@ public struct LibraryView: View {
         case .objktCuration(let cid):
             baseTokens = tokens.filter { $0.rawMetadata?["curationId"] == cid }
         case .collection(let key):
-            if key.hasPrefix("fxhash:") {
-                let targetProj = String(key.dropFirst(7)).lowercased()
-                baseTokens = tokens.filter { $0.isFxhash && (resolvedProjectName(for: $0).lowercased() == targetProj) }
+            if collectionScope == .entireCollection {
+                if let entire = entireCollectionTokens[key] ?? entireCollectionTokens[key.lowercased()], !entire.isEmpty {
+                    baseTokens = entire
+                } else {
+                    baseTokens = tokens.filter { collectionTokenMatches(token: $0, key: key) }
+                }
             } else {
-                baseTokens = tokens.filter { $0.contract.lowercased() == key.lowercased() }
+                baseTokens = tokens.filter { collectionTokenMatches(token: $0, key: key) }
             }
         }
 
@@ -569,9 +577,15 @@ public struct LibraryView: View {
                     let colKey = token.isFxhash ? "fxhash:\(resolvedProjectName(for: token))" : token.contract
                     let colDisplay = token.isFxhash ? resolvedProjectName(for: token) : resolvedName(for: token.contract)
                     let colCount = tokens.filter { collectionTokenMatches(token: $0, key: colKey) }.count
-                    let isColRotating: Bool = {
-                        if case .collection(let activeContract, _) = activeRotationTarget {
-                            return activeContract.caseInsensitiveCompare(colKey) == .orderedSame
+                    let isColMyRotating: Bool = {
+                        if case .collection(let activeContract, _, let scope) = activeRotationTarget {
+                            return activeContract.caseInsensitiveCompare(colKey) == .orderedSame && scope == .inLibrary
+                        }
+                        return false
+                    }()
+                    let isColEntireRotating: Bool = {
+                        if case .collection(let activeContract, _, let scope) = activeRotationTarget {
+                            return activeContract.caseInsensitiveCompare(colKey) == .orderedSame && scope == .entireCollection
                         }
                         return false
                     }()
@@ -584,7 +598,8 @@ public struct LibraryView: View {
                         artistDisplayName: token.creators.first.map { artistDisplayName(for: $0) } ?? (token.creators.first ?? "Unknown"),
                         fxhashProjectInfo: fxhashProjects[token.id],
                         isLiveOnDesktop: currentWallpaperTokenId == token.tokenId,
-                        isCollectionRotating: isColRotating,
+                        isCollectionMyRotating: isColMyRotating,
+                        isCollectionEntireRotating: isColEntireRotating,
                         galleries: galleries,
                         matteMode: $matteMode,
                         customHex: $customHex,
@@ -592,8 +607,12 @@ public struct LibraryView: View {
                             currentWallpaperTokenId = token.tokenId
                             onSetWallpaper(token)
                         },
-                        onRotateCollection: {
-                            startRotatingCurrentScope(.collection(contract: colKey, displayName: colDisplay))
+                        onRotateCollectionMy: {
+                            startRotatingCurrentScope(.collection(contract: colKey, displayName: colDisplay, scope: .inLibrary))
+                        },
+                        onRotateCollectionEntire: {
+                            loadEntireCollection(for: colKey)
+                            startRotatingCurrentScope(.collection(contract: colKey, displayName: colDisplay, scope: .entireCollection))
                         },
                         onAddToGallery: { gid in
                             Task {
@@ -638,41 +657,9 @@ public struct LibraryView: View {
 
     private var artworksGridView: some View {
         VStack(spacing: 0) {
-            // Breadcrumbs header if viewing a specific collection
-            if case .collection(let contract) = selectedSidebarItem {
-                HStack(spacing: 8) {
-                    Button(action: {
-                        selectedSidebarItem = .collections
-                    }) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "chevron.left")
-                            Text("All Collections")
-                        }
-                        .font(.caption)
-                    }
-                    .buttonStyle(.link)
-
-                    Text("/")
-                        .foregroundColor(.secondary)
-                        .font(.caption)
-
-                    Text(resolvedName(for: contract))
-                        .font(.headline)
-                        .lineLimit(1)
-
-                    Spacer()
-
-                    Button("Open on objkt.com") {
-                        if let url = URL(string: "https://objkt.com/collections/\(contract)") {
-                            NSWorkspace.shared.open(url)
-                        }
-                    }
-                    .font(.caption)
-                    .buttonStyle(.link)
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-                .background(Color.secondary.opacity(0.06))
+            // Collection mixed-context header & scope selector
+            if case .collection(let colKey) = selectedSidebarItem {
+                collectionScopeHeader(for: colKey)
             }
 
             // Desktop Rotation Player Header Bar
@@ -739,6 +726,155 @@ public struct LibraryView: View {
             .searchable(text: $searchText, prompt: "Search title, creator, or collection…")
         }
         .navigationTitle(navigationTitleString)
+    }
+
+    // MARK: - Collection Mixed-Context Scope Header
+
+    private func collectionScopeHeader(for colKey: String) -> some View {
+        let isFxhash = colKey.hasPrefix("fxhash:")
+        let projName = isFxhash ? String(colKey.dropFirst(7)) : resolvedName(for: colKey)
+        let myCount = tokens.filter { collectionTokenMatches(token: $0, key: colKey) }.count
+        let entireList = entireCollectionTokens[colKey] ?? entireCollectionTokens[colKey.lowercased()]
+        let entireCount = entireList?.count
+
+        let isCurrentScopeRotating: Bool = {
+            if case .collection(let activeContract, _, let activeScope) = activeRotationTarget {
+                return activeContract.caseInsensitiveCompare(colKey) == .orderedSame && activeScope == collectionScope
+            }
+            return false
+        }()
+
+        return VStack(spacing: 8) {
+            // Row 1: Breadcrumb + Marketplace Links
+            HStack(spacing: 8) {
+                Button(action: {
+                    selectedSidebarItem = .collections
+                }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "chevron.left")
+                        Text("Collections")
+                    }
+                    .font(.caption)
+                    .fontWeight(.medium)
+                }
+                .buttonStyle(.link)
+
+                Text("/")
+                    .foregroundColor(.secondary.opacity(0.6))
+                    .font(.caption)
+
+                Text(projName)
+                    .font(.headline)
+                    .fontWeight(.bold)
+                    .lineLimit(1)
+
+                if isFxhash {
+                    Text("fxhash Generative Project")
+                        .font(.system(size: 10, weight: .semibold))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.secondary.opacity(0.12))
+                        .cornerRadius(4)
+                }
+
+                Spacer()
+
+                // Marketplace direct link
+                if isFxhash {
+                    let firstToken = tokens.first(where: { collectionTokenMatches(token: $0, key: colKey) })
+                    if let pId = fxhashProjects[firstToken?.id ?? ""]?.issuerId ?? firstToken?.fxhashProjectId {
+                        Button(action: {
+                            if let url = URL(string: "https://objkt.com/collections/fxhash/projects/\(pId)") {
+                                NSWorkspace.shared.open(url)
+                            }
+                        }) {
+                            Label("Project on objkt", systemImage: "folder")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.link)
+
+                        Button(action: {
+                            if let url = URL(string: "https://www.fxhash.xyz/generative/slug/\(pId)") {
+                                NSWorkspace.shared.open(url)
+                            }
+                        }) {
+                            Label("Project on fxhash", systemImage: "cube")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.link)
+                    }
+                } else {
+                    Button(action: {
+                        if let url = URL(string: "https://objkt.com/collections/\(colKey)") {
+                            NSWorkspace.shared.open(url)
+                        }
+                    }) {
+                        Label("Collection on objkt", systemImage: "arrow.up.right.square")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.link)
+                }
+            }
+
+            // Row 2: Mixed-Context Scope Selector & 1-Click Desktop Rotation
+            HStack(spacing: 12) {
+                // Segmented Scope Switcher
+                Picker("Scope", selection: $collectionScope) {
+                    Text("In My Library (\(myCount))")
+                        .tag(CollectionRotationScope.inLibrary)
+
+                    if let total = entireCount {
+                        Text("Entire Collection (\(total))")
+                            .tag(CollectionRotationScope.entireCollection)
+                    } else if isFetchingEntireCollection {
+                        Text("Entire Collection (Loading…)")
+                            .tag(CollectionRotationScope.entireCollection)
+                    } else {
+                        Text("Entire Collection (Explore)")
+                            .tag(CollectionRotationScope.entireCollection)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 380)
+                .onChange(of: collectionScope) { _, newScope in
+                    if newScope == .entireCollection {
+                        loadEntireCollection(for: colKey)
+                    }
+                }
+
+                if isFetchingEntireCollection {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Loading on-chain pieces…")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+
+                Spacer()
+
+                // Dual Desktop Rotation Action
+                Button(action: {
+                    startRotatingCurrentScope(.collection(
+                        contract: colKey,
+                        displayName: projName,
+                        scope: collectionScope
+                    ))
+                }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: isCurrentScopeRotating ? "checkmark.circle.fill" : "play.fill")
+                            .font(.system(size: 10, weight: .bold))
+                        Text(isCurrentScopeRotating ? "Rotating on Desktop" : (collectionScope == .entireCollection ? "Rotate Entire Collection" : "Rotate My Pieces (\(myCount))"))
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(isCurrentScopeRotating ? Color.green : Color.accentColor)
+                .controlSize(.small)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(Color.secondary.opacity(0.06))
     }
 
     // MARK: - Desktop Rotation Player Bar
@@ -898,7 +1034,8 @@ public struct LibraryView: View {
         case .created:
             return .created
         case .collection(let contract):
-            return .collection(contract: contract, displayName: resolvedName(for: contract))
+            let baseName = contract.hasPrefix("fxhash:") ? String(contract.dropFirst(7)) : resolvedName(for: contract)
+            return .collection(contract: contract, displayName: baseName, scope: collectionScope)
         case .customGallery(let gid):
             let name = galleries.first(where: { $0.id == gid })?.name ?? "Gallery"
             return .customGallery(id: gid, name: name)
@@ -918,8 +1055,8 @@ public struct LibraryView: View {
             return true
         case (.created, .created):
             return true
-        case (.collection(let c1, _), .collection(let c2, _)):
-            return c1.caseInsensitiveCompare(c2) == .orderedSame
+        case (.collection(let c1, _, let s1), .collection(let c2, _, let s2)):
+            return c1.caseInsensitiveCompare(c2) == .orderedSame && s1 == s2
         case (.customGallery(let id1, _), .customGallery(let id2, _)):
             return id1 == id2
         case (.objktCuration(let id1, _), .objktCuration(let id2, _)):
@@ -938,7 +1075,8 @@ public struct LibraryView: View {
         case .created:
             return "Created Art"
         case .collection(let contract):
-            return resolvedName(for: contract)
+            let baseName = contract.hasPrefix("fxhash:") ? String(contract.dropFirst(7)) : resolvedName(for: contract)
+            return collectionScope == .entireCollection ? "Entire \(baseName)" : "My \(baseName)"
         case .customGallery(let gid):
             return galleries.first(where: { $0.id == gid })?.name ?? "Gallery"
         case .objktCuration(let cid):
@@ -994,14 +1132,14 @@ public struct LibraryView: View {
             .background(.ultraThinMaterial)
 
             // If a collection is currently rotating, show banner
-            if case .collection(_, let displayName) = activeRotationTarget {
+            if case .collection(_, let displayName, let scope) = activeRotationTarget {
                 HStack(spacing: 10) {
                     Circle().fill(isRotationPaused ? Color.orange : Color.green).frame(width: 8, height: 8)
                     Text(isRotationPaused ? "Desktop Rotation Paused:" : "Live Desktop Rotation:")
                         .font(.caption)
                         .fontWeight(.bold)
                         .foregroundColor(isRotationPaused ? .orange : .green)
-                    Text(displayName)
+                    Text(scope == .entireCollection ? "Entire \(displayName)" : "My \(displayName)")
                         .font(.caption)
                         .fontWeight(.semibold)
                     Spacer()
@@ -1026,9 +1164,15 @@ public struct LibraryView: View {
                 let columns = [GridItem(.adaptive(minimum: 220, maximum: 280), spacing: 16)]
                 LazyVGrid(columns: columns, spacing: 16) {
                     ForEach(filteredCollections) { col in
-                        let isRotating: Bool = {
-                            if case .collection(let activeContract, _) = activeRotationTarget {
-                                return activeContract.caseInsensitiveCompare(col.contract) == .orderedSame
+                        let isMyRotating: Bool = {
+                            if case .collection(let activeContract, _, let scope) = activeRotationTarget {
+                                return activeContract.caseInsensitiveCompare(col.contract) == .orderedSame && scope == .inLibrary
+                            }
+                            return false
+                        }()
+                        let isEntireRotating: Bool = {
+                            if case .collection(let activeContract, _, let scope) = activeRotationTarget {
+                                return activeContract.caseInsensitiveCompare(col.contract) == .orderedSame && scope == .entireCollection
                             }
                             return false
                         }()
@@ -1036,12 +1180,18 @@ public struct LibraryView: View {
                         CollectionCardView(
                             item: col,
                             previewTokens: tokens.filter { collectionTokenMatches(token: $0, key: col.contract) }.prefix(4),
-                            isRotating: isRotating,
+                            isRotating: isMyRotating || isEntireRotating,
+                            isMyRotating: isMyRotating,
+                            isEntireRotating: isEntireRotating,
                             onSelect: {
                                 selectedSidebarItem = .collection(col.contract)
                             },
-                            onStartRotating: {
-                                startRotatingCurrentScope(.collection(contract: col.contract, displayName: col.displayName))
+                            onStartRotatingMy: {
+                                startRotatingCurrentScope(.collection(contract: col.contract, displayName: col.displayName, scope: .inLibrary))
+                            },
+                            onStartRotatingEntire: {
+                                loadEntireCollection(for: col.contract)
+                                startRotatingCurrentScope(.collection(contract: col.contract, displayName: col.displayName, scope: .entireCollection))
                             }
                         )
                     }
@@ -1379,6 +1529,49 @@ public struct LibraryView: View {
         }
     }
 
+    private func loadEntireCollection(for key: String) {
+        Task {
+            if let cached = await repository.getFullCollectionTokens(key: key), !cached.isEmpty {
+                await MainActor.run {
+                    self.entireCollectionTokens[key] = cached
+                }
+                return
+            }
+
+            await MainActor.run {
+                self.isFetchingEntireCollection = true
+            }
+
+            let client = ObjktClient()
+            if let fetched = try? await client.fetchEntireCollection(key: key) {
+                let libraryOwnedIds = Set(tokens.filter { $0.isOwned }.map(\.id))
+                let sourceAddresses = Set(sources.compactMap { $0.walletAddress?.lowercased() })
+
+                let annotated = fetched.map { t -> UnifiedToken in
+                    var copy = t
+                    if libraryOwnedIds.contains(t.id) {
+                        copy.isOwned = true
+                    }
+                    if copy.creators.contains(where: { sourceAddresses.contains($0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) }) {
+                        copy.isCreated = true
+                    }
+                    return copy
+                }
+
+                try? await repository.setFullCollectionTokens(key: key, tokens: annotated)
+
+                await MainActor.run {
+                    self.entireCollectionTokens[key] = annotated
+                    self.isFetchingEntireCollection = false
+                }
+            } else {
+                await MainActor.run {
+                    self.isFetchingEntireCollection = false
+                }
+            }
+        }
+    }
+
     private func syncAllSources() async {
         isSyncing = true
         defer { isSyncing = false }
@@ -1473,8 +1666,11 @@ struct CollectionCardView: View {
     let item: CollectionContractItem
     let previewTokens: ArraySlice<UnifiedToken>
     let isRotating: Bool
+    let isMyRotating: Bool
+    let isEntireRotating: Bool
     let onSelect: () -> Void
-    let onStartRotating: () -> Void
+    let onStartRotatingMy: () -> Void
+    let onStartRotatingEntire: () -> Void
 
     @State private var isHovered: Bool = false
 
@@ -1519,7 +1715,7 @@ struct CollectionCardView: View {
 
                 // Rotating badge on preview
                 if isRotating {
-                    Text("LIVE ON DESKTOP")
+                    Text(isEntireRotating ? "ENTIRE LIVE" : "MY PIECES LIVE")
                         .font(.system(size: 8, weight: .black))
                         .foregroundColor(.white)
                         .padding(.horizontal, 6)
@@ -1542,7 +1738,7 @@ struct CollectionCardView: View {
                     .lineLimit(1)
 
                 HStack {
-                    Text("\(item.count) artworks")
+                    Text("\(item.count) in library")
                         .font(.caption)
                         .foregroundColor(.secondary)
 
@@ -1555,19 +1751,33 @@ struct CollectionCardView: View {
             }
             .padding(.horizontal, 4)
 
-            // 1-Click Rotate Action Button
-            Button(action: onStartRotating) {
-                HStack(spacing: 4) {
-                    Image(systemName: isRotating ? "checkmark.circle.fill" : "play.fill")
-                        .font(.system(size: 10))
-                    Text(isRotating ? "Rotating on Desktop" : "Rotate on Desktop")
-                        .font(.system(size: 11, weight: .semibold))
+            // Dual 1-Click Action Buttons: Rotate My vs Rotate Entire
+            HStack(spacing: 6) {
+                Button(action: onStartRotatingMy) {
+                    HStack(spacing: 3) {
+                        Image(systemName: isMyRotating ? "checkmark.circle.fill" : "play.fill")
+                            .font(.system(size: 9))
+                        Text(isMyRotating ? "Rotating My" : "Rotate My (\(item.count))")
+                            .font(.system(size: 10, weight: .semibold))
+                    }
+                    .frame(maxWidth: .infinity)
                 }
-                .frame(maxWidth: .infinity)
+                .buttonStyle(.borderedProminent)
+                .tint(isMyRotating ? Color.green : Color.accentColor)
+                .controlSize(.small)
+
+                Button(action: onStartRotatingEntire) {
+                    HStack(spacing: 3) {
+                        Image(systemName: isEntireRotating ? "checkmark.circle.fill" : "globe")
+                            .font(.system(size: 9))
+                        Text(isEntireRotating ? "Rotating All" : "Rotate Entire")
+                            .font(.system(size: 10, weight: .semibold))
+                    }
+                }
+                .buttonStyle(.bordered)
+                .tint(isEntireRotating ? Color.green : Color.secondary)
+                .controlSize(.small)
             }
-            .buttonStyle(.borderedProminent)
-            .tint(isRotating ? Color.green : Color.accentColor)
-            .controlSize(.small)
             .padding(.top, 2)
         }
         .padding(10)
@@ -1581,6 +1791,18 @@ struct CollectionCardView: View {
         .contentShape(Rectangle())
         .onTapGesture {
             onSelect()
+        }
+        .contextMenu {
+            Button(action: onSelect) {
+                Label("Browse Collection…", systemImage: "rectangle.stack")
+            }
+            Divider()
+            Button(action: onStartRotatingMy) {
+                Label("Rotate My Pieces on Desktop (\(item.count))", systemImage: "play.circle")
+            }
+            Button(action: onStartRotatingEntire) {
+                Label("Rotate Entire Collection on Desktop (on-chain)", systemImage: "globe")
+            }
         }
     }
 }
@@ -1613,10 +1835,10 @@ struct TokenCardView: View {
                         .frame(width: geo.size.width, height: geo.size.height)
                         .clipped()
 
-                    // Top Left Live Badge
-                    if isLiveOnDesktop {
-                        VStack {
-                            HStack {
+                    // Top Left Live or Ownership Badges
+                    VStack {
+                        HStack(spacing: 4) {
+                            if isLiveOnDesktop {
                                 Text("LIVE ON DESKTOP")
                                     .font(.system(size: 8, weight: .black))
                                     .foregroundColor(.white)
@@ -1625,11 +1847,30 @@ struct TokenCardView: View {
                                     .background(Color.blue)
                                     .cornerRadius(4)
                                     .shadow(radius: 2)
-                                    .padding(6)
-                                Spacer()
+                            }
+                            if token.isOwned {
+                                Text("OWNED")
+                                    .font(.system(size: 8, weight: .black))
+                                    .foregroundColor(.white)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 3)
+                                    .background(Color.green)
+                                    .cornerRadius(4)
+                                    .shadow(radius: 2)
+                            } else if token.isCreated {
+                                Text("CREATED")
+                                    .font(.system(size: 8, weight: .black))
+                                    .foregroundColor(.white)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 3)
+                                    .background(Color.purple)
+                                    .cornerRadius(4)
+                                    .shadow(radius: 2)
                             }
                             Spacer()
                         }
+                        .padding(6)
+                        Spacer()
                     }
 
                     // Bottom Right Category Badge
@@ -1999,12 +2240,14 @@ struct TokenInspectorView: View {
     let artistDisplayName: String
     let fxhashProjectInfo: FxhashProjectInfo?
     let isLiveOnDesktop: Bool
-    let isCollectionRotating: Bool
+    let isCollectionMyRotating: Bool
+    let isCollectionEntireRotating: Bool
     let galleries: [DesktopGallery]
     @Binding var matteMode: WallpaperMatteMode
     @Binding var customHex: String
     let onSetWallpaper: () -> Void
-    let onRotateCollection: () -> Void
+    let onRotateCollectionMy: () -> Void
+    let onRotateCollectionEntire: () -> Void
     let onAddToGallery: (UUID) -> Void
     let onFilterByCollection: (String) -> Void
 
@@ -2234,17 +2477,33 @@ struct TokenInspectorView: View {
                             .foregroundColor(.secondary)
                     }
 
-                    Button(action: onRotateCollection) {
-                        HStack(spacing: 6) {
-                            Image(systemName: isCollectionRotating ? "checkmark.circle.fill" : "play.fill")
-                            Text(isCollectionRotating ? "Rotating on Desktop" : (token.isFxhash ? "Rotate Project on Desktop" : "Rotate Collection on Desktop"))
-                                .fontWeight(.semibold)
+                    VStack(spacing: 6) {
+                        Button(action: onRotateCollectionEntire) {
+                            HStack(spacing: 6) {
+                                Image(systemName: isCollectionEntireRotating ? "checkmark.circle.fill" : "globe")
+                                Text(isCollectionEntireRotating ? "Rotating Entire Collection" : (token.isFxhash ? "Rotate Entire Project on Desktop" : "Rotate Entire Collection on Desktop"))
+                                    .fontWeight(.semibold)
+                            }
+                            .frame(maxWidth: .infinity)
                         }
-                        .frame(maxWidth: .infinity)
+                        .buttonStyle(.borderedProminent)
+                        .tint(isCollectionEntireRotating ? Color.green : Color.accentColor)
+                        .controlSize(.regular)
+
+                        if collectionTokensCount > 0 {
+                            Button(action: onRotateCollectionMy) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: isCollectionMyRotating ? "checkmark.circle.fill" : "person.fill")
+                                    Text(isCollectionMyRotating ? "Rotating My Pieces on Desktop" : "Rotate My Pieces (\(collectionTokensCount))")
+                                        .fontWeight(.semibold)
+                                }
+                                .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.bordered)
+                            .tint(isCollectionMyRotating ? Color.green : Color.secondary)
+                            .controlSize(.regular)
+                        }
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(isCollectionRotating ? Color.green : Color.accentColor)
-                    .controlSize(.regular)
 
                     Button(action: {
                         let filterKey = token.isFxhash ? "fxhash:\(collectionName)" : token.contract

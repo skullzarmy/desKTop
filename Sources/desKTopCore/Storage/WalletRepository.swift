@@ -1,10 +1,22 @@
 import Foundation
 
-public enum ActiveRotationTarget: Codable, Hashable, Sendable {
+public enum CollectionRotationScope: String, Codable, Hashable, Sendable {
+    case inLibrary = "inLibrary"
+    case entireCollection = "entireCollection"
+
+    public var displayName: String {
+        switch self {
+        case .inLibrary: return "My Pieces"
+        case .entireCollection: return "Entire Collection"
+        }
+    }
+}
+
+public enum ActiveRotationTarget: Hashable, Sendable {
     case allArt
     case owned
     case created
-    case collection(contract: String, displayName: String)
+    case collection(contract: String, displayName: String, scope: CollectionRotationScope = .inLibrary)
     case customGallery(id: UUID, name: String)
     case objktCuration(id: String, name: String)
 
@@ -13,7 +25,8 @@ public enum ActiveRotationTarget: Codable, Hashable, Sendable {
         case .allArt: return "All Art"
         case .owned: return "Owned Art"
         case .created: return "Created Art"
-        case .collection(_, let name): return name
+        case .collection(_, let name, let scope):
+            return scope == .entireCollection ? "Entire \(name)" : "My \(name)"
         case .customGallery(_, let name): return name
         case .objktCuration(_, let name): return name
         }
@@ -25,8 +38,87 @@ public enum ActiveRotationTarget: Codable, Hashable, Sendable {
     }
 
     public var collectionContract: String? {
-        if case .collection(let c, _) = self { return c }
+        if case .collection(let c, _, _) = self { return c }
         return nil
+    }
+
+    public var collectionScope: CollectionRotationScope? {
+        if case .collection(_, _, let s) = self { return s }
+        return nil
+    }
+}
+
+private struct EmptyCodable: Codable {}
+
+extension ActiveRotationTarget: Codable {
+    enum CodingKeys: String, CodingKey {
+        case allArt, owned, created, collection, customGallery, objktCuration
+    }
+
+    enum CollectionKeys: String, CodingKey {
+        case contract, displayName, scope
+    }
+
+    enum CustomGalleryKeys: String, CodingKey {
+        case id, name
+    }
+
+    enum ObjktCurationKeys: String, CodingKey {
+        case id, name
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if container.contains(.allArt) {
+            self = .allArt
+        } else if container.contains(.owned) {
+            self = .owned
+        } else if container.contains(.created) {
+            self = .created
+        } else if container.contains(.collection) {
+            let colContainer = try container.nestedContainer(keyedBy: CollectionKeys.self, forKey: .collection)
+            let contract = try colContainer.decode(String.self, forKey: .contract)
+            let displayName = try colContainer.decode(String.self, forKey: .displayName)
+            let scope = try colContainer.decodeIfPresent(CollectionRotationScope.self, forKey: .scope) ?? .inLibrary
+            self = .collection(contract: contract, displayName: displayName, scope: scope)
+        } else if container.contains(.customGallery) {
+            let gContainer = try container.nestedContainer(keyedBy: CustomGalleryKeys.self, forKey: .customGallery)
+            let id = try gContainer.decode(UUID.self, forKey: .id)
+            let name = try gContainer.decode(String.self, forKey: .name)
+            self = .customGallery(id: id, name: name)
+        } else if container.contains(.objktCuration) {
+            let oContainer = try container.nestedContainer(keyedBy: ObjktCurationKeys.self, forKey: .objktCuration)
+            let id = try oContainer.decode(String.self, forKey: .id)
+            let name = try oContainer.decode(String.self, forKey: .name)
+            self = .objktCuration(id: id, name: name)
+        } else {
+            self = .allArt
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .allArt:
+            try container.encode(EmptyCodable(), forKey: .allArt)
+        case .owned:
+            try container.encode(EmptyCodable(), forKey: .owned)
+        case .created:
+            try container.encode(EmptyCodable(), forKey: .created)
+        case .collection(let contract, let displayName, let scope):
+            var colContainer = container.nestedContainer(keyedBy: CollectionKeys.self, forKey: .collection)
+            try colContainer.encode(contract, forKey: .contract)
+            try colContainer.encode(displayName, forKey: .displayName)
+            try colContainer.encode(scope, forKey: .scope)
+        case .customGallery(let id, let name):
+            var gContainer = container.nestedContainer(keyedBy: CustomGalleryKeys.self, forKey: .customGallery)
+            try gContainer.encode(id, forKey: .id)
+            try gContainer.encode(name, forKey: .name)
+        case .objktCuration(let id, let name):
+            var oContainer = container.nestedContainer(keyedBy: ObjktCurationKeys.self, forKey: .objktCuration)
+            try oContainer.encode(id, forKey: .id)
+            try oContainer.encode(name, forKey: .name)
+        }
     }
 }
 
@@ -115,7 +207,9 @@ public struct RepositoryState: Codable, Sendable {
 /// Actor managing local file-based persistence for user sources, preferences, custom galleries, and token index
 public actor WalletRepository {
     private let storageURL: URL
+    private let fullCollectionCacheURL: URL
     private var state: RepositoryState
+    private var fullCollectionCache: [String: [UnifiedToken]] = [:]
 
     public init(storageDirectory: URL? = nil) {
         let directory: URL
@@ -128,6 +222,7 @@ public actor WalletRepository {
 
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         self.storageURL = directory.appendingPathComponent("library.json")
+        self.fullCollectionCacheURL = directory.appendingPathComponent("collection_tokens_cache.json")
 
         // Load existing state if available
         if let data = try? Data(contentsOf: storageURL),
@@ -136,6 +231,12 @@ public actor WalletRepository {
             self.state = loaded
         } else {
             self.state = RepositoryState()
+        }
+
+        // Load cached entire collections
+        if let cacheData = try? Data(contentsOf: fullCollectionCacheURL),
+           let loadedCache = try? JSONDecoder().decode([String: [UnifiedToken]].self, from: cacheData) {
+            self.fullCollectionCache = loadedCache
         }
     }
 
@@ -343,7 +444,12 @@ public actor WalletRepository {
             return state.tokens.filter { !$0.isCreated }
         case .created:
             return state.tokens.filter { $0.isCreated }
-        case .collection(let contract, _):
+        case .collection(let contract, _, let scope):
+            if scope == .entireCollection {
+                if let full = fullCollectionCache[contract] ?? fullCollectionCache[contract.lowercased()], !full.isEmpty {
+                    return full
+                }
+            }
             let matching: [UnifiedToken]
             if contract.hasPrefix("fxhash:") {
                 let proj = String(contract.dropFirst(7)).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -362,6 +468,31 @@ public actor WalletRepository {
         case .objktCuration(let cid, _):
             let matched = state.tokens.filter { $0.rawMetadata?["curationId"] == cid }
             return matched.isEmpty ? state.tokens : matched
+        }
+    }
+
+    // MARK: - Full Collection Token Cache
+
+    public func getFullCollectionTokens(key: String) -> [UnifiedToken]? {
+        return fullCollectionCache[key] ?? fullCollectionCache[key.lowercased()]
+    }
+
+    public func setFullCollectionTokens(key: String, tokens: [UnifiedToken]) async throws {
+        fullCollectionCache[key] = tokens
+        fullCollectionCache[key.lowercased()] = tokens
+        persistFullCollectionCache()
+        if case .collection(let activeContract, _, let scope) = state.activeRotationTarget,
+           activeContract.caseInsensitiveCompare(key) == .orderedSame,
+           scope == .entireCollection {
+            await MainActor.run {
+                NotificationCenter.default.post(name: .didChangeActiveRotation, object: nil)
+            }
+        }
+    }
+
+    private func persistFullCollectionCache() {
+        if let data = try? JSONEncoder().encode(fullCollectionCache) {
+            try? data.write(to: fullCollectionCacheURL, options: .atomic)
         }
     }
 
