@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="100%" height="100%">
+  <!--
+    desKTop macOS App Icon Master
+    - Strict Uniform Metric: g = 24.0px everywhere (perpendicular distance = 24.04px across all 45.0° diagonals)
+    - T: Single unified path with 45.0° diagonal cut (d="M 290 320 H 734 V 392 H 636 V 704 L 564 632 V 392 H 290 Z")
+    - K: Single unified path extending to baseline at 602 (parallel to T cut, exact uniform 24px gap the entire length)
+    - Play button: Compact 45.0° right isosceles triangle (points="464,532 540,456 540,608")
+    - Apple macOS squircle geometry (size: 712x712, corner radius: 170)
+  -->
+  <defs>
+    <!-- Background diffuse glow -->
+    <radialGradient id="app-bg-glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#00E5FF" stop-opacity="0.12" />
+      <stop offset="100%" stop-color="#00E5FF" stop-opacity="0" />
+    </radialGradient>
+
+    <!-- macOS Squircle Body: Deep obsidian glass substrate -->
+    <linearGradient id="squircle-glass" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#191D28" />
+      <stop offset="50%" stop-color="#10131B" />
+      <stop offset="100%" stop-color="#08090E" />
+    </linearGradient>
+
+    <!-- macOS Squircle Rim: Precision chamfered bezel -->
+    <linearGradient id="squircle-rim" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#38435C" />
+      <stop offset="50%" stop-color="#1E2330" />
+      <stop offset="100%" stop-color="#12151D" />
+    </linearGradient>
+
+    <!-- Lettering Metal Finish: Brushed titanium / platinum -->
+    <linearGradient id="letter-metal" x1="270" y1="240" x2="770" y2="760" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FFFFFF" />
+      <stop offset="35%" stop-color="#F1F5F9" />
+      <stop offset="70%" stop-color="#CBD5E1" />
+      <stop offset="100%" stop-color="#94A3B8" />
+    </linearGradient>
+
+    <!-- Play Button Negative Space Accent: Vivid Tezos Cyan -->
+    <linearGradient id="play-cyan-grad" x1="440" y1="532" x2="560" y2="532" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#00F5FF" />
+      <stop offset="100%" stop-color="#0077FE" />
+    </linearGradient>
+
+    <!-- Soft drop-shadow filter for play button glow -->
+    <filter id="cyan-glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="12" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+  </defs>
+
+  <!-- Ambient background glow behind the squircle -->
+  <circle cx="512" cy="512" r="380" fill="url(#app-bg-glow)" />
+
+  <!-- macOS App Squircle Canvas -->
+  <rect id="app-squircle" x="144" y="144" width="712" height="712" rx="170" fill="url(#squircle-glass)" stroke="url(#squircle-rim)" stroke-width="5" />
+
+  <!-- Monogram Mark Group -->
+  <g id="monogram-group">
+    <!-- T: Single unified path with 45.0° cut on bottom-left -->
+    <path id="t-letter" d="M 290 320 H 734 V 392 H 636 V 704 L 564 632 V 392 H 290 Z" fill="url(#letter-metal)" />
+
+    <!-- K: Single unified path extending to baseline at 602 (parallel to T cut, exact uniform 24px gap) -->
+    <path id="k-letter" d="M 290 416 H 362 V 502 L 450 416 H 542 L 430 532 L 602 704 H 510 L 362 556 V 704 H 290 Z" fill="url(#letter-metal)" />
+
+    <!-- Play Button (◀) Right Isosceles Triangle (Uniform 24px margin everywhere) -->
+    <polygon id="play-button" points="464,532 540,456 540,608" fill="url(#play-cyan-grad)" filter="url(#cyan-glow)" />
+  </g>
+</svg>

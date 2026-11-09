@@ -1,0 +1,20 @@
+# Xcode & Swift Package Manager
+.build/
+Packages/
+Package.resolved
+DerivedData/
+*.xcodeproj
+*.xcworkspace
+!default.sublime-project
+
+# macOS system
+.DS_Store
+*.swp
+*~
+
+# Build artifacts
+dist/
+build/
+*.dmg
+*.zip
+*.tar.gz

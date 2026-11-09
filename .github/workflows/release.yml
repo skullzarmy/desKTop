@@ -1,0 +1,82 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      prerelease:
+        description: 'Mark as pre-release'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    name: Build macOS Application
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Extract Tag / Version
+        id: version
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          if [ "$TAG" = "$GITHUB_REF" ]; then
+            TAG="v1.0.0-dev"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Building release for tag $TAG"
+
+      - name: Swift Build Release
+        run: swift build -c release --arch arm64 --arch x86_64
+
+      - name: Prepare Artifact Archive
+        run: |
+          mkdir -p dist
+          cp -R .build/apple/Products/Release/* dist/ 2>/dev/null || cp -R .build/release/* dist/ 2>/dev/null || true
+          cd dist
+          tar -czf ../desKTop-macos-universal.tar.gz *
+          cd ..
+          shasum -a 256 desKTop-macos-universal.tar.gz > checksums.txt
+          cat checksums.txt
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-macos-release
+          path: |
+            desKTop-macos-universal.tar.gz
+            checksums.txt
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: build-macos
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: desktop-macos-release
+          path: release-assets
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: desKTop ${{ github.ref_name }}
+          draft: false
+          prerelease: ${{ inputs.prerelease || false }}
+          generate_release_notes: true
+          files: |
+            release-assets/*

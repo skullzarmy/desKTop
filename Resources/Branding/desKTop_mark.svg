@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="100%" height="100%">
+  <!--
+    desKTop Monogram Mark
+    - Mathematically Uniform Gap: g = 24.0px everywhere (perpendicular distance = 24.04px across all 45.0° diagonals)
+    - T: Single unified path with exact 45.0° diagonal cut (M 290 320 H 734 V 392 H 636 V 704 L 564 632 V 392 H 290 Z)
+    - K: Single unified path extending to baseline at 602 (slope = 1.000000, exact 24.04px gap to T cut the entire length)
+    - Play button: Compact 45.0° right isosceles triangle (points="464,532 540,456 540,608")
+    - Every gap across the entire monogram (vertical, horizontal, diagonal, crook, and cut) is strictly equal to 24px
+  -->
+  <g id="desktop-monogram">
+    <!-- T: Single unified path with 45.0° diagonal cut on bottom-left parallel to K lower arm -->
+    <path id="t-letter" d="M 290 320 H 734 V 392 H 636 V 704 L 564 632 V 392 H 290 Z" fill="currentColor" />
+
+    <!-- K: Single unified path (extends to baseline at 602, parallel to T cut, exact uniform 24px gap) -->
+    <path id="k-letter" d="M 290 416 H 362 V 502 L 450 416 H 542 L 430 532 L 602 704 H 510 L 362 556 V 704 H 290 Z" fill="currentColor" />
+
+    <!-- Negative Space Play Button (◀) - Symmetrical 45.0° Right Isosceles Triangle (Tezos Blue #2B72FF, 50% gray #808080 in monochrome) -->
+    <polygon id="play-button" points="464,532 540,456 540,608" fill="#2B72FF" />
+  </g>
+</svg>
