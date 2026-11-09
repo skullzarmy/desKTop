@@ -127,7 +127,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          name: desKTop ${{ github.ref_name }}
+          name: "desKTop"
           draft: false
           prerelease: ${{ inputs.prerelease || false }}
           generate_release_notes: true
