@@ -19,12 +19,12 @@ mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 cp "$DIR/.build/debug/desKTop" "$MACOS_DIR/desKTop"
 chmod +x "$MACOS_DIR/desKTop"
 
-# Copy resources & branding
+# Copy resources, icons & branding
 if [ -d "$DIR/Resources" ]; then
-    cp -R "$DIR/Resources/" "$RESOURCES_DIR/"
+    cp -R "$DIR/Resources/"* "$RESOURCES_DIR/"
 fi
 
-# Create Info.plist
+# Create Info.plist with LSUIElement to completely prevent Dock icon
 cat << 'EOF' > "$CONTENTS_DIR/Info.plist"
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -32,6 +32,8 @@ cat << 'EOF' > "$CONTENTS_DIR/Info.plist"
 <dict>
     <key>CFBundleExecutable</key>
     <string>desKTop</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
     <string>xyz.fafolab.desktop</string>
     <key>CFBundleName</key>
@@ -44,6 +46,8 @@ cat << 'EOF' > "$CONTENTS_DIR/Info.plist"
     <string>1</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
+    <key>LSUIElement</key>
+    <true/>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSHumanReadableCopyright</key>
@@ -52,5 +56,5 @@ cat << 'EOF' > "$CONTENTS_DIR/Info.plist"
 </plist>
 EOF
 
-echo "✓ desKTop.app bundle generated successfully at:"
+echo "✓ desKTop.app background accessory bundle generated at:"
 echo "  $APP_DIR"

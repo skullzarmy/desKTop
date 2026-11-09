@@ -4,28 +4,48 @@ import desKTopCore
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.regular)
-        NSApp.activate(ignoringOtherApps: true)
+        // Strictly set activation policy to accessory so it NEVER appears in the macOS Dock
+        NSApp.setActivationPolicy(.accessory)
     }
 }
 
 @main
 struct desKTopApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-    @Environment(\.openWindow) private var openWindow
 
     @State private var currentToken: UnifiedToken?
     @State private var isPaused: Bool = false
     @State private var scaling: WallpaperScaling = .fit
-    @State private var statusMessage: String = "Ready"
+    @State private var statusMessage: String = "Active"
 
     private let repository = WalletRepository()
     private let wallpaperService = StillWallpaperService()
     private let vault = MediaVault()
 
+    private var menuBarIcon: NSImage? {
+        // 1. Try Bundle resource
+        if let bundleURL = Bundle.main.url(forResource: "menu_bar_icon@2x", withExtension: "png", subdirectory: "Resources/Branding") ??
+                           Bundle.main.url(forResource: "menu_bar_icon@2x", withExtension: "png") ??
+                           Bundle.main.url(forResource: "menu_bar_icon", withExtension: "png") {
+            if let img = NSImage(contentsOf: bundleURL) {
+                img.size = NSSize(width: 18, height: 18)
+                return img
+            }
+        }
+
+        // 2. Fallback direct path
+        let directPath = "/Users/joepeterson/development/desKTop/app/Resources/Branding/menu_bar_icon@2x.png"
+        if let img = NSImage(contentsOfFile: directPath) {
+            img.size = NSSize(width: 18, height: 18)
+            return img
+        }
+
+        return nil
+    }
+
     var body: some Scene {
-        // 1. Menu Bar Companion
-        MenuBarExtra("desKTop", systemImage: "photo.artframe") {
+        // Pure MenuBarExtra - no dock icon, no unwanted launch window
+        MenuBarExtra {
             MenuBarContentView(
                 currentToken: $currentToken,
                 isPaused: $isPaused,
@@ -37,36 +57,32 @@ struct desKTopApp: App {
                 onPrevious: {
                     Task { await rotatePrevious() }
                 },
-                onRestartAnimation: {
-                    // Replay trigger
-                },
+                onRestartAnimation: {},
                 onOpenLibrary: {
-                    openWindow(id: "library-window")
-                    NSApp.activate(ignoringOtherApps: true)
+                    LibraryWindowController.shared.show(repository: repository) { token in
+                        Task {
+                            await setTokenAsWallpaper(token)
+                        }
+                    }
                 }
             )
+        } label: {
+            if let icon = menuBarIcon {
+                Image(nsImage: icon)
+            } else {
+                Text("desKTop")
+            }
         }
         .menuBarExtraStyle(.window)
-
-        // 2. Main Desktop Management Window
-        Window("desKTop — Tezos Art Gallery", id: "library-window") {
-            LibraryView(repository: repository) { token in
-                Task {
-                    await setTokenAsWallpaper(token)
-                }
-            }
-            .frame(minWidth: 900, minHeight: 600)
-        }
-        .defaultSize(width: 1080, height: 720)
     }
 
     private func setTokenAsWallpaper(_ token: UnifiedToken) async {
         guard let uri = token.primaryWallpaperUri else {
-            statusMessage = "No visual media available"
+            statusMessage = "No media available"
             return
         }
 
-        statusMessage = "Caching & rendering \(token.name)..."
+        statusMessage = "Rendering \(token.name)..."
         do {
             let (fileURL, _) = try await vault.getOrFetchMedia(for: uri)
             await MainActor.run {
@@ -79,9 +95,9 @@ struct desKTopApp: App {
                             scaling: scaling
                         )
                         self.currentToken = token
-                        self.statusMessage = "Active on \(screen.localizedName)"
+                        self.statusMessage = "Live on \(screen.localizedName)"
                     } catch {
-                        self.statusMessage = "Failed setting wallpaper: \(error.localizedDescription)"
+                        self.statusMessage = "Error: \(error.localizedDescription)"
                     }
                 }
             }
