@@ -85,6 +85,7 @@ public struct LibraryView: View {
 
     @State private var selectedSidebarItem: LibrarySidebarItem = .allArt
     @State private var selectedToken: UnifiedToken?
+    @State private var isInspectorPresented: Bool = false
     @State private var currentWallpaperTokenId: String?
 
     // Filters and controls
@@ -469,42 +470,52 @@ public struct LibraryView: View {
                     .help("Add a Tezos wallet, domain, or collection")
                 }
             }
-        } content: {
-            // Main Content Area: Collections Browser OR Artwork Grid
-            if case .collections = selectedSidebarItem {
-                collectionsBrowserView
-            } else {
-                artworksGridView
-            }
         } detail: {
-            // Inspector Pane
-            if let token = selectedToken {
-                TokenInspectorView(
-                    token: token,
-                    collectionName: resolvedName(for: token.contract),
-                    isLiveOnDesktop: currentWallpaperTokenId == token.tokenId,
-                    galleries: galleries,
-                    matteMode: $matteMode,
-                    customHex: $customHex,
-                    onSetWallpaper: {
-                        currentWallpaperTokenId = token.tokenId
-                        onSetWallpaper(token)
-                    },
-                    onAddToGallery: { gid in
-                        Task {
-                            try? await repository.addTokenToGallery(tokenId: token.id, galleryId: gid)
-                            await reloadData()
+            // Main Content Area: Collections Browser OR Artwork Grid
+            Group {
+                if case .collections = selectedSidebarItem {
+                    collectionsBrowserView
+                } else {
+                    artworksGridView
+                }
+            }
+            .inspector(isPresented: $isInspectorPresented) {
+                if let token = selectedToken {
+                    TokenInspectorView(
+                        token: token,
+                        collectionName: resolvedName(for: token.contract),
+                        isLiveOnDesktop: currentWallpaperTokenId == token.tokenId,
+                        galleries: galleries,
+                        matteMode: $matteMode,
+                        customHex: $customHex,
+                        onSetWallpaper: {
+                            currentWallpaperTokenId = token.tokenId
+                            onSetWallpaper(token)
+                        },
+                        onAddToGallery: { gid in
+                            Task {
+                                try? await repository.addTokenToGallery(tokenId: token.id, galleryId: gid)
+                                await reloadData()
+                            }
+                        },
+                        onFilterByCollection: { contract in
+                            selectedSidebarItem = .collection(contract)
                         }
-                    },
-                    onFilterByCollection: { contract in
-                        selectedSidebarItem = .collection(contract)
+                    )
+                } else {
+                    inspectorPlaceholderView
+                }
+            }
+            .inspectorColumnWidth(min: 280, ideal: 330, max: 400)
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button(action: { isInspectorPresented.toggle() }) {
+                        Image(systemName: "sidebar.trailing")
                     }
-                )
-            } else {
-                inspectorPlaceholderView
+                    .help("Toggle Artwork Details Inspector")
+                }
             }
         }
-        .navigationSplitViewColumnWidth(min: 280, ideal: 320, max: 420)
         .task {
             await reloadData()
         }
@@ -631,51 +642,53 @@ public struct LibraryView: View {
         let isCurrentScopeRotating = isScopeCurrentlyRotating(currentTarget)
 
         return HStack(spacing: 12) {
-            if isCurrentScopeRotating {
-                // Live Rotation Status Indicator
-                HStack(spacing: 8) {
-                    Circle()
-                        .fill(isRotationPaused ? Color.orange : Color.green)
-                        .frame(width: 10, height: 10)
-                        .overlay(
-                            Circle()
-                                .stroke(isRotationPaused ? Color.orange.opacity(0.4) : Color.green.opacity(0.4), lineWidth: 4)
-                        )
+            // Left: Scope & Live Status Indicator
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(isCurrentScopeRotating ? (isRotationPaused ? Color.orange : Color.green) : Color.secondary.opacity(0.4))
+                    .frame(width: 8, height: 8)
 
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(spacing: 6) {
-                            Text(isRotationPaused ? "DESKTOP ROTATION PAUSED" : "ROTATING ON DESKTOP")
-                                .font(.system(size: 10, weight: .black))
-                                .foregroundColor(isRotationPaused ? .orange : .green)
+                Text(currentScopeTitle)
+                    .font(.system(size: 13, weight: .bold))
+                    .lineLimit(1)
 
-                            Text("• \(displayedTokens.count) artworks in scope")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                        }
+                Text("(\(displayedTokens.count))")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
 
-                        Text(currentScopeTitle)
-                            .font(.headline)
-                            .fontWeight(.bold)
-                            .lineLimit(1)
-                    }
+                if isCurrentScopeRotating {
+                    Text(isRotationPaused ? "PAUSED" : "ROTATING")
+                        .font(.system(size: 9, weight: .black))
+                        .foregroundColor(isRotationPaused ? .orange : .green)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background((isRotationPaused ? Color.orange : Color.green).opacity(0.12))
+                        .cornerRadius(4)
                 }
+            }
+            .layoutPriority(1)
 
-                Spacer()
+            Spacer(minLength: 8)
 
-                // Playback controls: Next, Pause/Resume, Interval Picker, Shuffle
-                HStack(spacing: 8) {
+            // Right: Player Controls
+            if isCurrentScopeRotating {
+                HStack(spacing: 6) {
                     // Next Wallpaper Button
                     Button(action: {
                         NotificationCenter.default.post(name: .didRequestNextWallpaper, object: nil)
                     }) {
-                        Label("Next Wallpaper", systemImage: "forward.end.fill")
-                            .font(.system(size: 11, weight: .bold))
+                        HStack(spacing: 4) {
+                            Image(systemName: "forward.end.fill")
+                                .font(.system(size: 10, weight: .bold))
+                            Text("Next")
+                                .font(.system(size: 11, weight: .bold))
+                        }
                     }
                     .buttonStyle(.borderedProminent)
-                    .controlSize(.regular)
-                    .help("Immediately advance to next desktop wallpaper")
+                    .controlSize(.small)
+                    .help("Advance to next wallpaper immediately")
 
-                    // Pause / Resume Button
+                    // Pause / Resume Toggle
                     Button(action: {
                         Task {
                             try? await repository.setRotationPaused(!isRotationPaused)
@@ -683,29 +696,37 @@ public struct LibraryView: View {
                         }
                     }) {
                         Image(systemName: isRotationPaused ? "play.fill" : "pause.fill")
-                            .font(.system(size: 12, weight: .bold))
+                            .font(.system(size: 11, weight: .bold))
                     }
                     .buttonStyle(.bordered)
-                    .controlSize(.regular)
+                    .controlSize(.small)
                     .help(isRotationPaused ? "Resume auto-rotation" : "Pause auto-rotation")
 
-                    // Interval Picker Dropdown
-                    Picker("", selection: Binding(
-                        get: { rotationInterval },
-                        set: { newInterval in
-                            rotationInterval = newInterval
-                            Task {
-                                try? await repository.setRotationInterval(newInterval.rawValue)
-                                await reloadData()
+                    // Interval Menu
+                    Menu {
+                        ForEach(RotationInterval.allCases) { interval in
+                            Button(interval.displayName) {
+                                rotationInterval = interval
+                                Task {
+                                    try? await repository.setRotationInterval(interval.rawValue)
+                                    await reloadData()
+                                }
                             }
                         }
-                    )) {
-                        ForEach(RotationInterval.allCases) { interval in
-                            Text(interval.displayName).tag(interval)
+                    } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: "timer")
+                            Text(rotationInterval.compactLabel)
+                                .fontWeight(.semibold)
                         }
+                        .font(.system(size: 11))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(Color.secondary.opacity(0.12))
+                        .cornerRadius(5)
                     }
-                    .labelsHidden()
-                    .frame(width: 155)
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
 
                     // Shuffle Toggle
                     Button(action: {
@@ -715,71 +736,51 @@ public struct LibraryView: View {
                         }
                     }) {
                         Image(systemName: isRotationShuffle ? "shuffle" : "arrow.triangle.2.circlepath")
-                            .font(.system(size: 12, weight: isRotationShuffle ? .black : .regular))
+                            .font(.system(size: 11, weight: isRotationShuffle ? .black : .regular))
                             .foregroundColor(isRotationShuffle ? .accentColor : .secondary)
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.regular)
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 4)
                     .help(isRotationShuffle ? "Shuffle: ON (random order)" : "Shuffle: OFF (sequential order)")
                 }
+                .fixedSize()
             } else {
-                // Not Currently Rotating This Scope: Prominent Action Bar!
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "display")
-                            .foregroundColor(.accentColor)
-                        Text("DESKTOP ART PLAYER")
-                            .font(.system(size: 10, weight: .black))
-                            .foregroundColor(.accentColor)
-                    }
-
-                    Text(currentScopeTitle)
-                        .font(.headline)
-                        .fontWeight(.bold)
-                        .lineLimit(1)
-                }
-
-                Spacer()
-
-                HStack(spacing: 10) {
-                    // 1-Click Save as Gallery button
+                HStack(spacing: 6) {
                     Button(action: {
                         saveCurrentScopeAsGallery()
                     }) {
-                        Label("Save as Gallery", systemImage: "plus.rectangle.on.rectangle")
-                            .font(.system(size: 11, weight: .medium))
+                        Label("Save Gallery", systemImage: "plus.rectangle.on.rectangle")
+                            .font(.system(size: 11))
                     }
                     .buttonStyle(.bordered)
-                    .controlSize(.regular)
-                    .help("Save these artworks as a custom desKTop Gallery playlist")
+                    .controlSize(.small)
 
-                    // Primary Start Rotating Button
                     Button(action: {
                         startRotatingCurrentScope(currentTarget)
                     }) {
-                        Label("Start Rotating on Desktop", systemImage: "play.circle.fill")
-                            .font(.system(size: 12, weight: .bold))
+                        Label("Rotate on Desktop", systemImage: "play.circle.fill")
+                            .font(.system(size: 11, weight: .bold))
                     }
                     .buttonStyle(.borderedProminent)
-                    .controlSize(.regular)
                     .tint(.green)
-                    .help("Set your Mac desktop background to automatically rotate artworks from this collection")
+                    .controlSize(.small)
                 }
+                .fixedSize()
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        .padding(.horizontal, 14)
+        .frame(height: 42)
         .background(
-            RoundedRectangle(cornerRadius: 10)
-                .fill(isCurrentScopeRotating ? Color.green.opacity(0.10) : Color.accentColor.opacity(0.08))
+            RoundedRectangle(cornerRadius: 8)
+                .fill(isCurrentScopeRotating ? Color.green.opacity(0.08) : Color.secondary.opacity(0.06))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(isCurrentScopeRotating ? Color.green.opacity(0.35) : Color.accentColor.opacity(0.20), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(isCurrentScopeRotating ? Color.green.opacity(0.25) : Color.secondary.opacity(0.12), lineWidth: 1)
         )
         .padding(.horizontal, 16)
-        .padding(.top, 10)
-        .padding(.bottom, 6)
+        .padding(.top, 6)
+        .padding(.bottom, 2)
     }
 
     private func currentActiveRotationTargetForCurrentView() -> ActiveRotationTarget {
@@ -959,8 +960,34 @@ public struct LibraryView: View {
     // MARK: - Filter Toolbar
 
     private var filterToolbar: some View {
-        HStack(spacing: 10) {
-            // Format Filter Menu
+        HStack(spacing: 8) {
+            // Scope Artworks Count
+            Text("\(displayedTokens.count) Artworks")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(.secondary)
+                .fixedSize()
+
+            // Active Collection Filter Chip (if filtered inside scope)
+            if let activeContract = selectedContractFilter {
+                HStack(spacing: 4) {
+                    Text(resolvedName(for: activeContract))
+                        .font(.system(size: 11, weight: .medium))
+                        .lineLimit(1)
+                    Button(action: { selectedContractFilter = nil }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 10))
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Color.accentColor.opacity(0.15))
+                .cornerRadius(4)
+            }
+
+            Spacer(minLength: 8)
+
+            // Format Filter Dropdown
             Menu {
                 ForEach(FormatFilter.allCases) { filter in
                     Button(action: { selectedFormatFilter = filter }) {
@@ -972,45 +999,21 @@ public struct LibraryView: View {
                     }
                 }
             } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: "photo")
-                        .font(.caption)
-                    Text(selectedFormatFilter.rawValue)
-                        .fontWeight(.medium)
+                HStack(spacing: 3) {
+                    Image(systemName: "line.3.horizontal.decrease.circle")
+                    Text(selectedFormatFilter == .all ? "Format" : selectedFormatFilter.rawValue)
                         .lineLimit(1)
-                    Image(systemName: "chevron.down")
-                        .font(.caption2)
                 }
-                .padding(.horizontal, 9)
-                .padding(.vertical, 5)
-                .background(Color.secondary.opacity(0.12))
-                .cornerRadius(6)
+                .font(.system(size: 11))
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background(Color.secondary.opacity(0.10))
+                .cornerRadius(5)
             }
             .menuStyle(.borderlessButton)
+            .fixedSize()
 
-            // Active Collection Filter Chip (if any)
-            if let activeContract = selectedContractFilter {
-                HStack(spacing: 5) {
-                    Image(systemName: "rectangle.stack")
-                        .font(.caption)
-                    Text(resolvedName(for: activeContract))
-                        .fontWeight(.semibold)
-                        .lineLimit(1)
-                    Button(action: {
-                        selectedContractFilter = nil
-                    }) {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.caption2)
-                    }
-                    .buttonStyle(.plain)
-                }
-                .padding(.horizontal, 9)
-                .padding(.vertical, 5)
-                .background(Color.accentColor.opacity(0.18))
-                .cornerRadius(6)
-            }
-
-            // Sort Menu
+            // Sort Menu (combines sort field & direction)
             Menu {
                 ForEach(TokenSortOption.allCases) { opt in
                     Button(action: { sortOption = opt }) {
@@ -1021,72 +1024,79 @@ public struct LibraryView: View {
                         }
                     }
                 }
-            } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: "arrow.up.arrow.down")
-                        .font(.caption)
-                    Text("Sort: \(sortOption.rawValue)")
-                        .fontWeight(.medium)
-                        .lineLimit(1)
-                    Image(systemName: "chevron.down")
-                        .font(.caption2)
+                Divider()
+                Button(action: { sortDirection = .ascending }) {
+                    if sortDirection == .ascending {
+                        Label("Ascending", systemImage: "checkmark")
+                    } else {
+                        Text("Ascending")
+                    }
                 }
-                .padding(.horizontal, 9)
-                .padding(.vertical, 5)
-                .background(Color.secondary.opacity(0.12))
-                .cornerRadius(6)
+                Button(action: { sortDirection = .descending }) {
+                    if sortDirection == .descending {
+                        Label("Descending", systemImage: "checkmark")
+                    } else {
+                        Text("Descending")
+                    }
+                }
+            } label: {
+                HStack(spacing: 3) {
+                    Image(systemName: sortDirection.iconName)
+                    Text(sortOption.rawValue)
+                        .lineLimit(1)
+                }
+                .font(.system(size: 11))
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background(Color.secondary.opacity(0.10))
+                .cornerRadius(5)
             }
             .menuStyle(.borderlessButton)
+            .fixedSize()
 
-            // Ascending / Descending Toggle Button
+            // Asc / Desc quick toggle button
             Button(action: {
                 sortDirection = (sortDirection == .ascending) ? .descending : .ascending
             }) {
-                HStack(spacing: 4) {
-                    Image(systemName: sortDirection.iconName)
-                        .font(.system(size: 11, weight: .bold))
-                    Text(sortDirection == .ascending ? "Asc" : "Desc")
-                        .font(.caption)
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 5)
-                .background(Color.secondary.opacity(0.12))
-                .cornerRadius(6)
+                Image(systemName: sortDirection == .ascending ? "arrow.up" : "arrow.down")
+                    .font(.system(size: 10, weight: .bold))
+                    .padding(4)
+                    .background(Color.secondary.opacity(0.10))
+                    .cornerRadius(4)
             }
             .buttonStyle(.plain)
-            .help(sortDirection == .ascending ? "Sorted Ascending (Click for Descending)" : "Sorted Descending (Click for Ascending)")
-
-            Spacer()
+            .help(sortDirection == .ascending ? "Ascending (Click for Descending)" : "Descending (Click for Ascending)")
 
             // Grid Size Slider
-            HStack(spacing: 6) {
+            HStack(spacing: 4) {
                 Image(systemName: "square.grid.3x3")
-                    .font(.caption2)
+                    .font(.system(size: 9))
                     .foregroundColor(.secondary)
                 Slider(value: $gridSize, in: 130...280)
-                    .frame(width: 80)
+                    .frame(width: 60)
                 Image(systemName: "square.grid.2x2")
-                    .font(.caption2)
+                    .font(.system(size: 9))
                     .foregroundColor(.secondary)
             }
 
             // Sync Button
             Button(action: {
-                Task {
-                    await syncAllSources()
-                }
+                Task { await syncAllSources() }
             }) {
                 if isSyncing {
-                    ProgressView()
-                        .controlSize(.small)
+                    ProgressView().controlSize(.small)
                 } else {
                     Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 11))
                 }
             }
             .buttonStyle(.plain)
-            .help("Sync all sources and curations")
             .disabled(isSyncing)
+            .help("Sync sources and curations")
         }
+        .padding(.horizontal, 16)
+        .frame(height: 32)
+        .background(.ultraThinMaterial)
     }
 
     private var emptyStateView: some View {

@@ -9,12 +9,13 @@ public final class LibraryWindowController: NSWindowController, NSWindowDelegate
 
     private init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1080, height: 720),
+            contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
         window.title = "desKTop — Tezos Art Gallery"
+        window.minSize = NSSize(width: 900, height: 600)
         window.center()
         window.setFrameAutosaveName("desKTopLibraryWindowAutosave")
         window.isReleasedWhenClosed = false

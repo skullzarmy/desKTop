@@ -25,6 +25,19 @@ public enum RotationInterval: Int, CaseIterable, Identifiable, Codable, Sendable
         case .onDisplayWake: return "On Display Wake Only"
         }
     }
+
+    public var compactLabel: String {
+        switch self {
+        case .oneMinute: return "1m"
+        case .fiveMinutes: return "5m"
+        case .fifteenMinutes: return "15m"
+        case .thirtyMinutes: return "30m"
+        case .oneHour: return "1h"
+        case .sixHours: return "6h"
+        case .daily: return "Daily"
+        case .onDisplayWake: return "On Wake"
+        }
+    }
 }
 
 /// Sleep-aware wallpaper rotation scheduler preventing darkwake GPU battery drain
