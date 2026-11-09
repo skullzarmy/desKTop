@@ -10,6 +10,7 @@ public enum LibrarySidebarItem: Hashable {
     case collection(String)    // contract address
     case customGallery(UUID)
     case objktCuration(String) // galleryId
+    case source(UUID)          // specific wallet source
 }
 
 /// Format category filter (UI filter, NOT hardcoded tabs)
@@ -104,6 +105,7 @@ public struct LibraryView: View {
     @State private var collectionScope: CollectionRotationScope = .inLibrary
     @State private var entireCollectionTokens: [String: [UnifiedToken]] = [:]
     @State private var isFetchingEntireCollection: Bool = false
+    @State private var sourceScope: WalletFollowScope = .owned
 
     @State private var selectedSidebarItem: LibrarySidebarItem = .allArt
     @State private var selectedToken: UnifiedToken?
@@ -136,6 +138,10 @@ public struct LibraryView: View {
     @State private var newGalleryDesc: String = ""
     @State private var newGalleryType: GalleryType = .smart
     @State private var newGalleryCriteria: GalleryFilterCriteria? = nil
+    @State private var newGalleryCreationMode: String = "curated"
+    @State private var newGalleryTargetWallet: String = ""
+    @State private var newGalleryTargetWalletScope: WalletFollowScope = .created
+    @State private var isCreatingSmartFollower: Bool = false
     @State private var tokensToAddToNewGallery: [String] = []
     @State private var isSyncing: Bool = false
     @State private var syncStatusMessage: String?
@@ -217,6 +223,20 @@ public struct LibraryView: View {
                 }
             } else {
                 baseTokens = tokens.filter { collectionTokenMatches(token: $0, key: key) }
+            }
+        case .source(let sid):
+            if let src = sources.first(where: { $0.id == sid }), let addr = src.walletAddress?.lowercased() {
+                if sourceScope == .created {
+                    baseTokens = tokens.filter { t in
+                        t.creators.contains { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == addr }
+                    }
+                } else {
+                    baseTokens = tokens.filter { t in
+                        t.isOwned && (t.rawMetadata?["sourceWallet"]?.lowercased() == addr || sources.count == 1)
+                    }
+                }
+            } else {
+                baseTokens = []
             }
         }
 
@@ -313,6 +333,20 @@ public struct LibraryView: View {
             }
         case .objktCuration(let cid):
             scopedTokens = tokens.filter { $0.rawMetadata?["curationId"] == cid }
+        case .source(let sid):
+            if let src = sources.first(where: { $0.id == sid }), let addr = src.walletAddress?.lowercased() {
+                if sourceScope == .created {
+                    scopedTokens = tokens.filter { t in
+                        t.creators.contains { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == addr }
+                    }
+                } else {
+                    scopedTokens = tokens.filter { t in
+                        t.isOwned && (t.rawMetadata?["sourceWallet"]?.lowercased() == addr || sources.count == 1)
+                    }
+                }
+            } else {
+                scopedTokens = []
+            }
         default:
             scopedTokens = tokens
         }
@@ -556,6 +590,40 @@ public struct LibraryView: View {
                                 .font(.caption2)
                                 .foregroundColor(.secondary)
                         }
+                        .tag(LibrarySidebarItem.source(source.id))
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            selectedSidebarItem = .source(source.id)
+                        }
+                        .contextMenu {
+                            Button("View Owned Pieces") {
+                                sourceScope = .owned
+                                selectedSidebarItem = .source(source.id)
+                            }
+                            Button("View Created Pieces") {
+                                sourceScope = .created
+                                selectedSidebarItem = .source(source.id)
+                            }
+                            Divider()
+                            Button("Follow Owned as Smart Gallery") {
+                                Task {
+                                    _ = try? await repository.followCollector(
+                                        addressOrDomain: source.walletAddress ?? source.displayName,
+                                        displayName: "Collected by \(source.displayName)"
+                                    )
+                                    await reloadData()
+                                }
+                            }
+                            Button("Follow Created as Smart Gallery") {
+                                Task {
+                                    _ = try? await repository.followCreator(
+                                        addressOrDomain: source.walletAddress ?? source.displayName,
+                                        displayName: "Created by \(source.displayName)"
+                                    )
+                                    await reloadData()
+                                }
+                            }
+                        }
                     }
 
                     Button(action: { isSourceSheetPresented = true }) {
@@ -633,6 +701,24 @@ public struct LibraryView: View {
                         },
                         onFilterByCollection: { contract in
                             selectedSidebarItem = .collection(contract)
+                        },
+                        onFollowArtistCreated: { addr, name in
+                            Task {
+                                let g = try? await repository.followCreator(addressOrDomain: addr, displayName: "Created by \(name)")
+                                await reloadData()
+                                if let g = g {
+                                    selectedSidebarItem = .customGallery(g.id)
+                                }
+                            }
+                        },
+                        onFollowArtistOwned: { addr, name in
+                            Task {
+                                let g = try? await repository.followCollector(addressOrDomain: addr, displayName: "Collected by \(name)")
+                                await reloadData()
+                                if let g = g {
+                                    selectedSidebarItem = .customGallery(g.id)
+                                }
+                            }
                         }
                     )
                 } else {
@@ -671,6 +757,11 @@ public struct LibraryView: View {
             // Collection mixed-context header & scope selector
             if case .collection(let colKey) = selectedSidebarItem {
                 collectionScopeHeader(for: colKey)
+            }
+
+            // Source wallet scope header & follower
+            if case .source(let sid) = selectedSidebarItem, let src = sources.first(where: { $0.id == sid }) {
+                sourceScopeHeader(for: src)
             }
 
             // Desktop Rotation Player Header Bar
@@ -888,6 +979,68 @@ public struct LibraryView: View {
         .background(Color.secondary.opacity(0.06))
     }
 
+    // MARK: - Source Wallet Follower Header
+
+    @ViewBuilder
+    private func sourceScopeHeader(for src: WalletSource) -> some View {
+        let addr = src.walletAddress?.lowercased() ?? ""
+        let ownedCount = tokens.filter { $0.isOwned && ($0.rawMetadata?["sourceWallet"]?.lowercased() == addr || sources.count == 1) }.count
+        let createdCount = tokens.filter { t in
+            t.creators.contains { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == addr }
+        }.count
+
+        HStack(spacing: 12) {
+            Circle()
+                .fill(src.isEnabled ? Color.green : Color.gray)
+                .frame(width: 8, height: 8)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(src.displayName)
+                    .font(.system(size: 13, weight: .bold))
+                if let a = src.walletAddress {
+                    Text(String(a.prefix(6)) + "…" + String(a.suffix(4)))
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            // Dual Scope: Owned vs Created
+            Picker("Wallet Scope", selection: $sourceScope) {
+                Text("Owned (\(ownedCount))").tag(WalletFollowScope.owned)
+                Text("Created (\(createdCount))").tag(WalletFollowScope.created)
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 220)
+
+            Spacer()
+
+            // 1-Click Follow as Smart Gallery
+            Button(action: {
+                Task {
+                    let title = sourceScope == .created ? "Created by \(src.displayName)" : "Collected by \(src.displayName)"
+                    let crit = GalleryFilterCriteria(targetWallet: src.walletAddress ?? src.displayName, walletScope: sourceScope)
+                    let g = try? await repository.createSmartGallery(name: title, description: "Smart Gallery tracking \(src.displayName)", criteria: crit)
+                    await reloadData()
+                    if let g = g {
+                        selectedSidebarItem = .customGallery(g.id)
+                    }
+                }
+            }) {
+                HStack(spacing: 4) {
+                    Image(systemName: "wand.and.stars")
+                        .font(.system(size: 10, weight: .bold))
+                    Text(sourceScope == .created ? "Follow Created as Smart Gallery" : "Follow Owned as Smart Gallery")
+                        .font(.system(size: 11, weight: .semibold))
+                }
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(Color.secondary.opacity(0.06))
+    }
+
     // MARK: - Desktop Rotation Player Bar
 
     private var desktopRotationPlayerBar: some View {
@@ -1053,6 +1206,8 @@ public struct LibraryView: View {
         case .objktCuration(let cid):
             let name = objktCurations.first(where: { $0.galleryId == cid })?.name ?? "Curation"
             return .objktCuration(id: cid, name: name)
+        case .source(let sid):
+            return (sourceScope == .created) ? .created : .owned
         case .collections:
             return .allArt
         }
@@ -1092,6 +1247,9 @@ public struct LibraryView: View {
             return galleries.first(where: { $0.id == gid })?.name ?? "Gallery"
         case .objktCuration(let cid):
             return objktCurations.first(where: { $0.galleryId == cid })?.name ?? "Curation"
+        case .source(let sid):
+            let srcName = sources.first(where: { $0.id == sid })?.displayName ?? "Source"
+            return (sourceScope == .created) ? "\(srcName) (Created)" : "\(srcName) (Owned)"
         case .collections:
             return "Collections"
         }
@@ -1436,6 +1594,10 @@ public struct LibraryView: View {
         case .collection(let contract):
             let displayName = resolvedName(for: contract)
             return "\(displayName) (\(displayedTokens.count))"
+        case .source(let sid):
+            let srcName = sources.first(where: { $0.id == sid })?.displayName ?? "Source"
+            let scopeLabel = (sourceScope == .created) ? "Created" : "Owned"
+            return "\(srcName) (\(scopeLabel) • \(displayedTokens.count))"
         }
     }
 
@@ -1533,10 +1695,56 @@ public struct LibraryView: View {
                         .cornerRadius(6)
                     }
                 }
+            } else {
+                // When created fresh from sidebar '+'
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Creation Mode")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Picker("Creation Mode", selection: $newGalleryCreationMode) {
+                        Text("Hand-Curated Playlist").tag("curated")
+                        Text("Follow a Wallet or Artist").tag("wallet")
+                    }
+                    .pickerStyle(.segmented)
+
+                    if newGalleryCreationMode == "wallet" {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "wand.and.stars")
+                                    .foregroundColor(.purple)
+                                Text("Follow Wallet / Artist as Smart Gallery")
+                                    .font(.caption)
+                                    .fontWeight(.bold)
+                                    .foregroundColor(.purple)
+                            }
+
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Tezos Wallet Address or .tez Domain")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                                TextField("e.g. artist.tez or tz1...", text: $newGalleryTargetWallet)
+                                    .textFieldStyle(.roundedBorder)
+                            }
+
+                            Picker("Works to Include", selection: $newGalleryTargetWalletScope) {
+                                Text("Created Works").tag(WalletFollowScope.created)
+                                Text("Owned Holdings").tag(WalletFollowScope.owned)
+                            }
+                            .pickerStyle(.segmented)
+
+                            Text("Automatically indexes on-chain pieces from Objkt & TzKT.")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(8)
+                        .background(Color.purple.opacity(0.08))
+                        .cornerRadius(6)
+                    }
+                }
             }
 
             VStack(alignment: .leading, spacing: 4) {
-                Text("Gallery Name")
+                Text("Gallery Name (Optional if Following Wallet)")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 TextField("e.g. Late Night Vibes, Generative Favorites…", text: $newGalleryName)
@@ -1558,31 +1766,63 @@ public struct LibraryView: View {
                 }
                 .keyboardShortcut(.cancelAction)
 
-                Button("Create Gallery") {
+                if isCreatingSmartFollower {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+
+                Button(newGalleryCreationMode == "wallet" && newGalleryCriteria == nil ? "Follow as Smart Gallery" : "Create Gallery") {
                     let name = newGalleryName.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !name.isEmpty else { return }
-                    Task {
-                        if newGalleryType == .smart, let crit = newGalleryCriteria {
-                            _ = try? await repository.createSmartGallery(
-                                name: name,
-                                description: newGalleryDesc.isEmpty ? nil : newGalleryDesc,
-                                criteria: crit
-                            )
-                        } else {
-                            _ = try? await repository.createManualGallery(
-                                name: name,
-                                description: newGalleryDesc.isEmpty ? nil : newGalleryDesc,
-                                tokenIds: tokensToAddToNewGallery
-                            )
+                    let walletInput = newGalleryTargetWallet.trimmingCharacters(in: .whitespacesAndNewlines)
+
+                    if newGalleryCreationMode == "wallet" && newGalleryCriteria == nil {
+                        guard !walletInput.isEmpty else { return }
+                        isCreatingSmartFollower = true
+                        Task {
+                            let g: DesktopGallery?
+                            let finalName = name.isEmpty ? (newGalleryTargetWalletScope == .created ? "Created by \(walletInput)" : "Collected by \(walletInput)") : name
+                            if newGalleryTargetWalletScope == .created {
+                                g = try? await repository.followCreator(addressOrDomain: walletInput, displayName: finalName)
+                            } else {
+                                g = try? await repository.followCollector(addressOrDomain: walletInput, displayName: finalName)
+                            }
+                            isCreatingSmartFollower = false
+                            await reloadData()
+                            if let g = g {
+                                selectedSidebarItem = .customGallery(g.id)
+                            }
+                            newGalleryTargetWallet = ""
+                            isNewGallerySheetPresented = false
                         }
-                        tokensToAddToNewGallery = []
-                        newGalleryCriteria = nil
-                        await reloadData()
-                        isNewGallerySheetPresented = false
+                    } else {
+                        guard !name.isEmpty else { return }
+                        Task {
+                            if newGalleryType == .smart, let crit = newGalleryCriteria {
+                                _ = try? await repository.createSmartGallery(
+                                    name: name,
+                                    description: newGalleryDesc.isEmpty ? nil : newGalleryDesc,
+                                    criteria: crit
+                                )
+                            } else {
+                                _ = try? await repository.createManualGallery(
+                                    name: name,
+                                    description: newGalleryDesc.isEmpty ? nil : newGalleryDesc,
+                                    tokenIds: tokensToAddToNewGallery
+                                )
+                            }
+                            tokensToAddToNewGallery = []
+                            newGalleryCriteria = nil
+                            await reloadData()
+                            isNewGallerySheetPresented = false
+                        }
                     }
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(newGalleryName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(
+                    (newGalleryCreationMode == "wallet" && newGalleryCriteria == nil) ?
+                        newGalleryTargetWallet.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty :
+                        newGalleryName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                )
                 .keyboardShortcut(.defaultAction)
             }
             .padding(.top, 8)
@@ -2456,6 +2696,8 @@ struct TokenInspectorView: View {
     let onRotateCollectionEntire: () -> Void
     let onAddToGallery: (UUID) -> Void
     let onFilterByCollection: (String) -> Void
+    let onFollowArtistCreated: (String, String) -> Void
+    let onFollowArtistOwned: (String, String) -> Void
 
     private var formattedMintDate: String? {
         guard let dateStr = token.rawMetadata?["date"], !dateStr.isEmpty else { return nil }
@@ -2656,6 +2898,53 @@ struct TokenInspectorView: View {
                             .padding(8)
                             .background(Color.secondary.opacity(0.06))
                             .cornerRadius(6)
+                    }
+
+                    // 1-Click Follow Artist Smart Gallery Actions
+                    if let creatorAddr = token.creators.first {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("FOLLOW ARTIST")
+                                .font(.system(size: 9, weight: .black))
+                                .foregroundColor(.secondary)
+
+                            HStack(spacing: 6) {
+                                Button(action: {
+                                    onFollowArtistCreated(creatorAddr, artistDisplayName)
+                                }) {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "wand.and.stars")
+                                            .font(.system(size: 10, weight: .bold))
+                                        Text("Follow Created Works")
+                                            .font(.system(size: 11, weight: .semibold))
+                                    }
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 4)
+                                    .background(Color.purple.opacity(0.12))
+                                    .foregroundColor(.purple)
+                                    .cornerRadius(6)
+                                }
+                                .buttonStyle(.plain)
+                                .help("Create a Smart Gallery tracking all works created by \(artistDisplayName)")
+
+                                Button(action: {
+                                    onFollowArtistOwned(creatorAddr, artistDisplayName)
+                                }) {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "person.crop.rectangle.stack")
+                                            .font(.system(size: 10, weight: .bold))
+                                        Text("Follow Collected")
+                                            .font(.system(size: 11, weight: .semibold))
+                                    }
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 4)
+                                    .background(Color.secondary.opacity(0.10))
+                                    .cornerRadius(6)
+                                }
+                                .buttonStyle(.plain)
+                                .help("Create a Smart Gallery tracking all works collected by \(artistDisplayName)")
+                            }
+                        }
+                        .padding(.top, 4)
                     }
                 }
                 .padding(10)

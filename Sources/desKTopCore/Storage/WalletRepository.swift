@@ -347,6 +347,100 @@ public actor WalletRepository {
         return gallery
     }
 
+    /// Follows all created works by any wallet or .tez domain as a live Smart Gallery
+    public func followCreator(addressOrDomain: String, displayName: String? = nil) async throws -> DesktopGallery {
+        let trimmed = addressOrDomain.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedAddr: TezosAddress
+        if trimmed.hasSuffix(".tez") || trimmed.contains(".") {
+            let resolver = TezosDomainsResolver()
+            if let profile = try? await resolver.resolve(domainInput: trimmed), let a = TezosAddress(profile.address) {
+                resolvedAddr = a
+            } else if let a = TezosAddress(trimmed) {
+                resolvedAddr = a
+            } else {
+                throw NSError(domain: "desKTop", code: 400, userInfo: [NSLocalizedDescriptionKey: "Could not resolve domain \(trimmed)"])
+            }
+        } else {
+            guard let a = TezosAddress(trimmed) else {
+                throw NSError(domain: "desKTop", code: 400, userInfo: [NSLocalizedDescriptionKey: "Invalid Tezos address: \(trimmed)"])
+            }
+            resolvedAddr = a
+        }
+
+        // Fetch minted works from Objkt GraphQL to ensure the library has them indexed
+        let objktClient = ObjktClient()
+        if let createdTokens = try? await objktClient.fetchCreatedTokens(creator: resolvedAddr, limit: 500), !createdTokens.isEmpty {
+            try await upsertTokens(createdTokens)
+        }
+
+        let shortAddr = String(resolvedAddr.raw.prefix(6)) + "…" + String(resolvedAddr.raw.suffix(4))
+        let galleryTitle = displayName ?? "Created by \(shortAddr)"
+        let criteria = GalleryFilterCriteria(targetWallet: resolvedAddr.raw, walletScope: .created)
+        return try await createSmartGallery(
+            name: galleryTitle,
+            description: "Smart Gallery tracking created works by \(resolvedAddr.raw)",
+            criteria: criteria
+        )
+    }
+
+    /// Follows all collected/owned works of any wallet or .tez domain as a live Smart Gallery
+    public func followCollector(addressOrDomain: String, displayName: String? = nil) async throws -> DesktopGallery {
+        let trimmed = addressOrDomain.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedAddr: TezosAddress
+        if trimmed.hasSuffix(".tez") || trimmed.contains(".") {
+            let resolver = TezosDomainsResolver()
+            if let profile = try? await resolver.resolve(domainInput: trimmed), let a = TezosAddress(profile.address) {
+                resolvedAddr = a
+            } else if let a = TezosAddress(trimmed) {
+                resolvedAddr = a
+            } else {
+                throw NSError(domain: "desKTop", code: 400, userInfo: [NSLocalizedDescriptionKey: "Could not resolve domain \(trimmed)"])
+            }
+        } else {
+            guard let a = TezosAddress(trimmed) else {
+                throw NSError(domain: "desKTop", code: 400, userInfo: [NSLocalizedDescriptionKey: "Invalid Tezos address: \(trimmed)"])
+            }
+            resolvedAddr = a
+        }
+
+        let tzktClient = TzKTClient()
+        if let ownedTokens = try? await tzktClient.fetchAllTokens(for: resolvedAddr), !ownedTokens.isEmpty {
+            var tagged = ownedTokens
+            for i in 0..<tagged.count {
+                var meta = tagged[i].rawMetadata ?? [:]
+                meta["sourceWallet"] = resolvedAddr.raw
+                tagged[i] = UnifiedToken(
+                    contract: tagged[i].contract,
+                    tokenId: tagged[i].tokenId,
+                    name: tagged[i].name,
+                    description: tagged[i].description,
+                    creators: tagged[i].creators,
+                    mimeType: tagged[i].mimeType,
+                    artifactUri: tagged[i].artifactUri,
+                    displayUri: tagged[i].displayUri,
+                    thumbnailUri: tagged[i].thumbnailUri,
+                    formats: tagged[i].formats,
+                    attributes: tagged[i].attributes,
+                    supply: tagged[i].supply,
+                    decimals: tagged[i].decimals,
+                    aleatory: tagged[i].aleatory,
+                    rawMetadata: meta,
+                    isOwned: true
+                )
+            }
+            try await upsertTokens(tagged)
+        }
+
+        let shortAddr = String(resolvedAddr.raw.prefix(6)) + "…" + String(resolvedAddr.raw.suffix(4))
+        let galleryTitle = displayName ?? "Collected by \(shortAddr)"
+        let criteria = GalleryFilterCriteria(targetWallet: resolvedAddr.raw, walletScope: .owned)
+        return try await createSmartGallery(
+            name: galleryTitle,
+            description: "Smart Gallery tracking collection of \(resolvedAddr.raw)",
+            criteria: criteria
+        )
+    }
+
     public func updateGallery(_ gallery: DesktopGallery) async throws {
         if let idx = state.galleries.firstIndex(where: { $0.id == gallery.id }) {
             var g = gallery

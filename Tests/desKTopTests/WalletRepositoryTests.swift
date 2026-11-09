@@ -107,5 +107,27 @@ public struct WalletRepositoryTests {
         let manualMatches = manualGallery.matchingTokens(from: currentTokens)
         try assertEqual(manualMatches.count, 1)
         try assertEqual(manualMatches.first?.name, "Static Oil Painting")
+
+        // 5. Following a Wallet / Creator as a Smart Gallery
+        let artistAddr = "tz1ArtistWallet1234567890123456789012"
+        let artistToken = UnifiedToken(
+            contract: "KT1art",
+            tokenId: "1",
+            name: "Artist Masterpiece",
+            creators: [artistAddr],
+            mimeType: "image/png"
+        )
+        try await repository.upsertTokens([artistToken])
+
+        let artistFollowCriteria = GalleryFilterCriteria(targetWallet: artistAddr, walletScope: .created)
+        let artistGallery = try await repository.createSmartGallery(
+            name: "Created by Artist",
+            criteria: artistFollowCriteria
+        )
+        try assertTrue(artistGallery.isSmart)
+        let allTokens = await repository.getTokens()
+        let artistMatches = artistGallery.matchingTokens(from: allTokens)
+        try assertEqual(artistMatches.count, 1)
+        try assertEqual(artistMatches.first?.name, "Artist Masterpiece")
     }
 }

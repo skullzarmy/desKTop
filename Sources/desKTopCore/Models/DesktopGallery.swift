@@ -8,12 +8,20 @@ public enum GalleryType: String, Codable, Sendable {
     case smart  // Live dynamic rule-based criteria (auto-updates with new mints & library syncs)
 }
 
+/// Follow scope when tracking a specific wallet or creator
+public enum WalletFollowScope: String, Codable, Sendable {
+    case created // Artworks created/minted by this wallet
+    case owned   // Artworks collected/held by this wallet
+}
+
 /// Dynamic filter rules for a Smart Gallery
 public struct GalleryFilterCriteria: Hashable, Codable, Sendable {
     public var searchText: String?
     public var formatFilter: String?
     public var collectionKey: String?
-    public var sourceScope: String? // "all", "owned", "created"
+    public var sourceScope: String?            // "all", "owned", "created"
+    public var targetWallet: String?           // Wallet address or .tez domain being followed
+    public var walletScope: WalletFollowScope? // .created vs .owned
     public var sortOption: String?
     public var sortDirection: String?
 
@@ -22,6 +30,8 @@ public struct GalleryFilterCriteria: Hashable, Codable, Sendable {
         formatFilter: String? = nil,
         collectionKey: String? = nil,
         sourceScope: String? = nil,
+        targetWallet: String? = nil,
+        walletScope: WalletFollowScope? = nil,
         sortOption: String? = nil,
         sortDirection: String? = nil
     ) {
@@ -29,6 +39,8 @@ public struct GalleryFilterCriteria: Hashable, Codable, Sendable {
         self.formatFilter = formatFilter
         self.collectionKey = collectionKey
         self.sourceScope = sourceScope
+        self.targetWallet = targetWallet
+        self.walletScope = walletScope
         self.sortOption = sortOption
         self.sortDirection = sortDirection
     }
@@ -92,6 +104,22 @@ public struct GalleryFilterCriteria: Hashable, Codable, Sendable {
         if let scope = sourceScope?.lowercased(), !scope.isEmpty {
             if scope == "owned" && !token.isOwned { return false }
             if scope == "created" && !token.isCreated { return false }
+        }
+
+        // 5. Target Wallet Follower (Created or Owned)
+        if let wallet = targetWallet?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), !wallet.isEmpty {
+            let scope = walletScope ?? .created
+            if scope == .created {
+                let matchesCreator = token.creators.contains { c in
+                    let cLower = c.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                    let alias = artistDisplayName(c).lowercased()
+                    return cLower == wallet || cLower.contains(wallet) || wallet.contains(cLower) || alias == wallet || alias.contains(wallet)
+                }
+                if !matchesCreator { return false }
+            } else if scope == .owned {
+                let sourceMatch = (token.rawMetadata?["sourceWallet"]?.lowercased() == wallet)
+                if !token.isOwned && !sourceMatch { return false }
+            }
         }
 
         return true
