@@ -1,53 +1,64 @@
 # desKTop
 
-**Native macOS Tezos Art Wallpaper Manager**
+**A digital frame for Tezos art on macOS.**
 
-[![License: Unlicense](https://img.shields.io/badge/license-Unlicense-blue.svg)](http://unlicense.org/)
-[![Platform](https://img.shields.io/badge/platform-macOS%2014.0%2B-lightgrey.svg)](https://apple.com/macos)
-[![Tezos](https://img.shields.io/badge/Tezos-Art%20NFTs-2C7DF7.svg)](https://tezos.com)
-
-**desKTop** transforms your Mac desktop into a living, dynamic gallery of your Tezos art collection.
-
-- **Zero Keys, Zero Signatures**: 100% public read-only indexer queries. No wallet connection or seed phrases needed.
-- **Tezos Domains & Subdomains**: Enter `alice.tez`, `sub.domain.tez`, or `builder.hack` (auto-expanded to `builder.hack.tez`).
-- **Strict Art Filtering**: Automatically filters out fungible tokens, DEX liquidity pools, DeFi positions, and governance tokens.
-- **Full Tezos Runtime Ecosystem**: Native support for static images, videos/GIFs, Aleatory (`ALEATORY-001`), Bootloader (`BTLDR`), EditArt parametric pieces, and fxhash.
-- **Dual Display Engine**: Still wallpapers via native macOS `NSWorkspace`, plus desktop-level borderless canvas window behind desktop icons.
-- **Battery Guardian**: Automatically pauses video and generative WebKit loops on battery or Low Power Mode, falling back to pre-rendered static snapshots.
+Enter any wallet address or `.tez` domain. desKTop turns your Mac's screen into a rotating gallery of on-chain art. It renders flat to wallpaper memory, so there are no open browser tabs, no background GPU drain, and no battery hit.
 
 ---
 
-## Architecture & Documentation
+### Features
 
-Full project specifications and technical roadmap are located in [`docs/PROJECT_REQS_AND_PLAN.md`](../docs/PROJECT_REQS_AND_PLAN.md).
+- **Flat-by-Default Architecture**: All generative, SVG, loop, and still artworks are composited headlessly and committed directly into the macOS wallpaper canvas (`NSWorkspace`). Drops to 0.0% CPU between rotations.
+- **Zero Keys, Zero Custody**: Read-only ledger queries via TzKT REST API, Objkt GraphQL, and Tezos Domains. No wallet connections, no seed phrases, no signing requests, and no telemetry.
+- **Smart Dynamic Galleries**: Save filter criteria or follow any creator's minted oeuvre or collector's holdings with a single click. As new pieces are minted on-chain, they stream into your desktop rotation automatically.
+- **Multi-Monitor Hardware Binding**: Screens are keyed to persistent hardware UUIDs (`CGDisplayCreateUUIDFromDisplayID`). Playlists stay assigned to their physical monitors across sleep, wake, and docking.
+- **Full Tezos Ecosystem Support**: fxhash (gentk v1, v2, v3 project differentiation), Hic et Nunc / Teia, Versum, Objkt collections, and animated GIF/WebP off-thread frame decoding.
+- **Battery & Sleep Guardian**: Automatically pauses rotation timers on sleep to eliminate background battery drain.
 
 ---
 
-## Building from Source
+### Installation
 
-### Prerequisites
-- macOS 14.0 Sonoma or later
-- Xcode 15.0+ or Swift 5.10+ command line tools
+Download the latest universal build for Apple Silicon and Intel:
 
-### Build & Run
+- **[Download desKTop.zip](https://github.com/skullzarmy/desKTop/releases/latest/download/desKTop.zip)**
+
+Unzip and drag `desKTop.app` to your `/Applications` folder.
+
+**Compatibility**: macOS Tahoe (16.0+), macOS Sequoia (15.0+), macOS Sonoma (14.0+).
+
+---
+
+### Building from Source
+
+#### Prerequisites
+- macOS 14.0+
+- Xcode or Swift 6.0+ command line tools
+
+#### Build and Test
 ```bash
 # Clone the repository
 git clone https://github.com/skullzarmy/desKTop.git
-cd desKTop/app
+cd desKTop
 
-# Build the Swift package
-swift build -c release
+# Run the test suite (11 test suites)
+./scripts/test.sh
 
-# Run tests
-swift test
+# Bundle the application (.app)
+./scripts/bundle.sh
+
+# Generate release zip
+./scripts/bundle.sh --release --zip
 ```
+
+The resulting `desKTop.app` bundle will be generated in `build/desKTop.app`.
 
 ---
 
-## License
+### License
 
 This is free and unencumbered software released into the public domain under [The Unlicense](LICENSE).
 
 ---
 
-*a [FAFO~~lab~~](https://fafolab.xyz) joint*
+<< a [FAFO~~lab~~](https://fafolab.xyz) joint >>
