@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Combine
 import desKTopCore
 
 @MainActor
@@ -48,8 +49,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var nextWallpaperObserver: NSObjectProtocol?
     private var isRotating: Bool = false
     private var pendingRotationChangeTask: Task<Void, Never>?
+    private var cancellables = Set<AnyCancellable>()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Restore user's preferred framing mode
+        if let savedScalingRaw = UserDefaults.standard.string(forKey: "wallpaperScaling"),
+           let savedScaling = WallpaperScaling(rawValue: savedScalingRaw) {
+            viewModel.scaling = savedScaling
+        }
+
+        // React immediately when the user changes Framing mode in the MenuBar UI
+        viewModel.$scaling
+            .dropFirst()
+            .removeDuplicates()
+            .sink { [weak self] newScaling in
+                UserDefaults.standard.set(newScaling.rawValue, forKey: "wallpaperScaling")
+                Task { @MainActor [weak self] in
+                    guard let self = self, let currentToken = self.viewModel.currentToken else { return }
+                    await self.setTokenAsWallpaper(currentToken)
+                }
+            }
+            .store(in: &cancellables)
+
         // Configure global URLCache with 100 MB memory and 1 GB disk cache for high-speed artwork & GIF caching
         let memoryCapacity = 100 * 1024 * 1024
         let diskCapacity = 1024 * 1024 * 1024
@@ -281,7 +302,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 controller.setBackgroundColor(matteColor)
 
                 let imageView = NSImageView(frame: screen.frame)
-                imageView.imageScaling = viewModel.scaling == .fill ? .scaleAxesIndependently : .scaleProportionallyUpOrDown
+                imageView.wantsLayer = true
+                if viewModel.scaling == .fill {
+                    imageView.layer?.contentsGravity = .resizeAspectFill
+                } else if viewModel.scaling == .center {
+                    imageView.layer?.contentsGravity = .center
+                } else {
+                    imageView.layer?.contentsGravity = .resizeAspect
+                }
                 imageView.animates = true
                 imageView.canDrawSubviewsIntoLayer = true
                 if let data = try? Data(contentsOf: fileURL), let img = NSImage(data: data) {
