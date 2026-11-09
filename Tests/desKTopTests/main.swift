@@ -55,6 +55,11 @@ await runSuite(name: "MediaVaultTests") {
     try await MediaVaultTests.run()
 }
 
+// Phase 3 Tests
+await runSuite(name: "DesktopEngineTests") {
+    try await DesktopEngineTests.run()
+}
+
 print("\n==========================================")
 print("Results: \(totalPassed) passed, \(totalFailed) failed.")
 print("==========================================")
