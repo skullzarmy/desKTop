@@ -2,7 +2,7 @@ import Foundation
 import desKTopCore
 
 public struct TezosDomainTests {
-    public static func run() throws {
+    public static func run() async throws {
         // Standard domain
         let domain = TezosDomain("alice.tez")
         try assertNotNil(domain)
@@ -32,5 +32,12 @@ public struct TezosDomainTests {
         try assertNil(TezosDomain("-alice.tez"))
         try assertNil(TezosDomain("alice-.tez"))
         try assertNil(TezosDomain("alice!@#.tez"))
+
+        // Resolver resolution of hack.tez domain via official API
+        let resolver = TezosDomainsResolver()
+        let resolved = try await resolver.resolve(domainInput: "skllz.hack")
+        try assertNotNil(resolved)
+        try assertEqual(resolved?.address, "tz1Qi77tcJn9foeHHP1QHj6UX1m1vLVLMbuY")
+        try assertEqual(resolved?.domain, "skllz.hack.tez")
     }
 }

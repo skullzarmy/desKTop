@@ -149,6 +149,70 @@ public struct LibraryView: View {
     }
 }
 
+/// Dedicated async artwork thumbnail loader for IPFS and HTTP media
+public struct ArtworkThumbnailView: View {
+    let token: UnifiedToken
+    let contentMode: ContentMode
+
+    public init(token: UnifiedToken, contentMode: ContentMode = .fill) {
+        self.token = token
+        self.contentMode = contentMode
+    }
+
+    private var targetURL: URL? {
+        let uri = token.thumbnailUri ?? token.displayUri ?? token.artifactUri
+        guard let uri = uri else { return nil }
+        return IPFSGatewayManager.resolvePublicURL(for: uri)
+    }
+
+    public var body: some View {
+        if let url = targetURL {
+            AsyncImage(url: url) { phase in
+                switch phase {
+                case .empty:
+                    ZStack {
+                        Color.secondary.opacity(0.08)
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                case .success(let image):
+                    image
+                        .resizable()
+                        .aspectRatio(contentMode: contentMode)
+                case .failure:
+                    placeholderView
+                @unknown default:
+                    placeholderView
+                }
+            }
+        } else {
+            placeholderView
+        }
+    }
+
+    private var placeholderView: some View {
+        ZStack {
+            Color.secondary.opacity(0.12)
+            Image(systemName: iconName(for: token.mediaCategory))
+                .font(.system(size: 26))
+                .foregroundColor(.secondary)
+        }
+    }
+
+    private func iconName(for category: MediaCategory) -> String {
+        switch category {
+        case .staticImage, .vectorImage: return "photo"
+        case .animatedImage: return "sparkles"
+        case .video: return "video"
+        case .interactiveHtml, .fxhash, .editArt: return "chevron.left.forwardslash.chevron.right"
+        case .aleatory: return "dice"
+        case .bootloader: return "cpu"
+        case .audio3d: return "cube"
+        case .unknown: return "photo.on.rectangle.angled"
+        }
+    }
+}
+
 /// Token Card View inside Library Grid
 struct TokenCardView: View {
     let token: UnifiedToken
@@ -158,26 +222,23 @@ struct TokenCardView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            // Placeholder / Thumbnail Box
             ZStack(alignment: .bottomTrailing) {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(Color.secondary.opacity(0.15))
-                    .aspectRatio(1.0, contentMode: .fit)
+                ArtworkThumbnailView(token: token, contentMode: .fill)
+                    .frame(height: 140)
+                    .clipped()
+                    .cornerRadius(8)
 
-                VStack {
-                    Spacer()
-                    HStack {
-                        Spacer()
-                        Text(token.mediaCategory.rawValue.capitalized)
-                            .font(.system(size: 10, weight: .bold))
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(.ultraThinMaterial)
-                            .cornerRadius(4)
-                            .padding(6)
-                    }
-                }
+                Text(token.mediaCategory.rawValue.capitalized)
+                    .font(.system(size: 10, weight: .bold))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(.ultraThinMaterial)
+                    .cornerRadius(4)
+                    .padding(6)
             }
+            .frame(maxWidth: .infinity, minHeight: 140)
+            .background(Color.secondary.opacity(0.1))
+            .cornerRadius(8)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(token.name)
@@ -226,6 +287,11 @@ struct TokenInspectorView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
+                ArtworkThumbnailView(token: token, contentMode: .fit)
+                    .frame(maxWidth: .infinity, maxHeight: 260)
+                    .background(Color.secondary.opacity(0.08))
+                    .cornerRadius(8)
+
                 VStack(alignment: .leading, spacing: 4) {
                     Text(token.name)
                         .font(.title2)

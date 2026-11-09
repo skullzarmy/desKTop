@@ -60,6 +60,20 @@ public struct UnifiedTokenTests {
         try assertEqual(modelToken.mediaCategory, .audio3d)
         try assertEqual(modelToken.primaryWallpaperUri, "ipfs://poster.png")
 
+        // fxhash GENTK
+        let fxhashGentk = UnifiedToken(
+            contract: "KT1KEa8z6vWXDJrVqtMrAeDVzsvxat3kHaCE",
+            tokenId: "402352",
+            name: "Token of Babel #4",
+            artifactUri: "ipfs://QmYQZCcJtY9GjPEn85rtycyd7ATAQyTVjVvhezgmFcvYBB?fxhash=oogXdxkNnryRNZfN3zvhPE6GzqkGhGoyio2shfTcnRQb5bha4gP",
+            rawMetadata: ["symbol": "GENTK", "iterationHash": "oogXdxkNnryRNZfN3zvhPE6GzqkGhGoyio2shfTcnRQb5bha4gP"]
+        )
+        try assertEqual(fxhashGentk.mediaCategory, .fxhash)
+
+        // IPFS Gateway Public URL Resolution
+        let resolvedURL = IPFSGatewayManager.resolvePublicURL(for: "ipfs://QmQyNNfhfnFSW3geXMRau7JrKq38FuCi3Ds12axxEnREdf")
+        try assertEqual(resolvedURL?.absoluteString, "https://gateway.pinata.cloud/ipfs/QmQyNNfhfnFSW3geXMRau7JrKq38FuCi3Ds12axxEnREdf")
+
         // Composite ID
         let token = UnifiedToken(
             contract: "KT1RJ6PbjHpwc3M5rw5s2Nbmefwbuwbdxton",

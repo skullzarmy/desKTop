@@ -148,7 +148,11 @@ public struct SourceManagementSheet: View {
                 if let profile = try await resolver.resolve(domainInput: domain.normalized),
                    let address = TezosAddress(profile.address) {
                     statusMessage = "Fetching tokens for \(domain.normalized)..."
-                    let tokens = try await tzkt.fetchTokens(for: address, limit: 200)
+                    let tokens = try await tzkt.fetchAllTokens(for: address) { count in
+                        Task { @MainActor in
+                            self.statusMessage = "Fetching tokens for \(domain.normalized) (\(count) loaded)..."
+                        }
+                    }
                     let artTokens = filter.filter(tokens)
 
                     let source = WalletSource(
@@ -182,7 +186,11 @@ public struct SourceManagementSheet: View {
                 let reverseProfile = try? await resolver.reverseResolve(address: address)
                 let domain = reverseProfile.flatMap { TezosDomain($0.domain) }
 
-                let tokens = try await tzkt.fetchTokens(for: address, limit: 200)
+                let tokens = try await tzkt.fetchAllTokens(for: address) { count in
+                    Task { @MainActor in
+                        self.statusMessage = "Fetching tokens for \(address.raw) (\(count) loaded)..."
+                    }
+                }
                 let artTokens = filter.filter(tokens)
 
                 let source = WalletSource.fromAddress(

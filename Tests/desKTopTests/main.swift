@@ -27,7 +27,7 @@ await runSuite(name: "TezosAddressTests") {
 }
 
 await runSuite(name: "TezosDomainTests") {
-    try TezosDomainTests.run()
+    try await TezosDomainTests.run()
 }
 
 await runSuite(name: "FungibleFilterTests") {

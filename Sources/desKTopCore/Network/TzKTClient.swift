@@ -21,6 +21,75 @@ public actor TzKTClient {
         self.network = network
     }
 
+    /// Fetches all tokens held by a specific wallet address across all paginated batches
+    public func fetchAllTokens(
+        for address: TezosAddress,
+        pageSize: Int = 500,
+        onProgress: (@Sendable (Int) -> Void)? = nil
+    ) async throws -> [UnifiedToken] {
+        var allTokens: [UnifiedToken] = []
+        var offset = 0
+
+        while true {
+            var components = URLComponents(url: network.baseURL.appendingPathComponent("v1/tokens/balances"), resolvingAgainstBaseURL: false)!
+            components.queryItems = [
+                URLQueryItem(name: "account", value: address.raw),
+                URLQueryItem(name: "balance.gt", value: "0"),
+                URLQueryItem(name: "token.metadata.null", value: "false"),
+                URLQueryItem(name: "limit", value: String(pageSize)),
+                URLQueryItem(name: "offset", value: String(offset))
+            ]
+
+            guard let url = components.url else {
+                throw URLError(.badURL)
+            }
+
+            var request = URLRequest(url: url)
+            request.setValue("desKTop/1.0", forHTTPHeaderField: "User-Agent")
+
+            let (data, response) = try await session.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse else {
+                throw URLError(.badServerResponse)
+            }
+
+            if httpResponse.statusCode == 429 {
+                // Rate limited by TzKT - wait 1 second and retry
+                try await Task.sleep(nanoseconds: 1_000_000_000)
+                continue
+            }
+
+            guard (200...299).contains(httpResponse.statusCode) else {
+                throw URLError(.badServerResponse)
+            }
+
+            guard let balances = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+                break
+            }
+
+            if balances.isEmpty {
+                break
+            }
+
+            let pageTokens = balances.compactMap { balanceDict -> UnifiedToken? in
+                guard let tokenDict = balanceDict["token"] as? [String: Any] else { return nil }
+                return parseUnifiedToken(from: tokenDict)
+            }
+
+            allTokens.append(contentsOf: pageTokens)
+            onProgress?(allTokens.count)
+
+            if balances.count < pageSize {
+                break
+            }
+
+            offset += balances.count
+            // Small pause between batches to prevent 429
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+
+        return allTokens
+    }
+
     /// Fetches all tokens held by a specific wallet address
     public func fetchTokens(for address: TezosAddress, limit: Int = 100, offset: Int = 0) async throws -> [UnifiedToken] {
         var components = URLComponents(url: network.baseURL.appendingPathComponent("v1/tokens/balances"), resolvingAgainstBaseURL: false)!

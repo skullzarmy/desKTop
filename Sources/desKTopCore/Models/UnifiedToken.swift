@@ -142,55 +142,90 @@ public struct UnifiedToken: Identifiable, Hashable, Codable, Sendable {
 
     /// Determines the media rendering category based on MIME type, contract, and metadata
     public var mediaCategory: MediaCategory {
-        // Check for Aleatory contract or metadata
-        if aleatory != nil || contract.lowercased() == "kt1aleatory" {
+        let lowerContract = contract.lowercased()
+        let uri = (artifactUri ?? "").lowercased()
+        let display = (displayUri ?? "").lowercased()
+        let mime = (mimeType ?? formats.first?.mimeType ?? "").lowercased()
+        let desc = description ?? ""
+
+        // 1. Aleatory on-chain generative art
+        if aleatory != nil ||
+           lowerContract == "kt1aleatory" ||
+           rawMetadata?["aleatory"] != nil ||
+           rawMetadata?["generator"]?.lowercased().contains("aleatory") == true ||
+           name.lowercased().contains("aleatory") {
             return .aleatory
         }
 
-        // Check for Bootloader (BTLDR) indicators
-        if let desc = description, desc.contains("BTLDR") || desc.contains("bootloader") {
+        // 2. Bootloader (BTLDR) bytecode generative art
+        if desc.contains("BTLDR") || desc.contains("bootloader") || name.contains("BTLDR") || name.contains("Bootloader") {
             return .bootloader
         }
 
-        let mime = (mimeType ?? formats.first?.mimeType ?? "").lowercased()
-        let uri = (artifactUri ?? "").lowercased()
+        // 3. fxhash Generative Tokens
+        // Known fxhash contracts:
+        // KT1KEa8z6vWXDJrVqtMrAeDVzsvxat3kHaCE (fxhash v1 gentk)
+        // KT1U6EHmng3rqGzgWRjVm31tYmGwgyMo61gk (fxhash v2 gentk)
+        // KT1EfsNuqwLACdq3mAA3gkpjTrMmqqeS2nuv (fxhash v3 gentk)
+        let fxhashContracts: Set<String> = [
+            "kt1kea8z6vwxdjrvqtmraedvzsvxat3khace",
+            "kt1u6ehmng3rqgzgwrjvm31tymgwgymo61gk",
+            "kt1efsnuqwlacdq3maa3gkpjtrmmqqes2nuv"
+        ]
 
-        // Vector Graphics
-        if mime == "image/svg+xml" || uri.hasSuffix(".svg") {
-            return .vectorImage
+        if fxhashContracts.contains(lowerContract) ||
+           uri.contains("fxhash=") ||
+           rawMetadata?["symbol"]?.uppercased() == "GENTK" ||
+           rawMetadata?["iterationHash"] != nil ||
+           rawMetadata?["generatorUri"] != nil ||
+           rawMetadata?["authenticityHash"] != nil {
+            return .fxhash
         }
 
-        // Animated Graphics
-        if mime == "image/gif" || uri.hasSuffix(".gif") {
-            return .animatedImage
+        // 4. EditArt
+        if uri.contains("editart") || desc.contains("EditArt") || name.contains("EditArt") {
+            return .editArt
         }
 
-        // Videos
-        if mime.hasPrefix("video/") || uri.hasSuffix(".mp4") || uri.hasSuffix(".webm") || uri.hasSuffix(".mov") {
-            return .video
-        }
-
-        // Static Images
-        if mime.hasPrefix("image/") {
-            return .staticImage
-        }
-
-        // Interactive HTML / Generative
-        if mime == "application/x-directory" || mime == "text/html" || uri.hasSuffix(".html") || uri.hasSuffix(".zip") {
-            // Check for EditArt
-            if uri.contains("editart") || (description?.contains("EditArt") ?? false) {
-                return .editArt
-            }
-            // Check for fxhash
-            if uri.contains("fxhash") || (rawMetadata?["symbol"]?.lowercased() == "fxhash") {
-                return .fxhash
-            }
+        // 5. Interactive HTML / Web Generative art
+        if mime == "application/x-directory" || mime == "text/html" ||
+           uri.hasSuffix(".html") || uri.hasSuffix(".zip") ||
+           uri.contains(".html?") || uri.contains(".zip?") {
             return .interactiveHtml
         }
 
-        // 3D & Audio
-        if mime.hasPrefix("model/") || mime.hasPrefix("audio/") || uri.hasSuffix(".gltf") || uri.hasSuffix(".glb") || uri.hasSuffix(".mp3") || uri.hasSuffix(".wav") {
+        // 6. Vector Graphics
+        if mime == "image/svg+xml" || uri.hasSuffix(".svg") || display.hasSuffix(".svg") {
+            return .vectorImage
+        }
+
+        // 7. Animated Graphics
+        if mime == "image/gif" || uri.hasSuffix(".gif") || display.hasSuffix(".gif") {
+            return .animatedImage
+        }
+
+        // 8. Videos
+        if mime.hasPrefix("video/") || uri.hasSuffix(".mp4") || uri.hasSuffix(".webm") || uri.hasSuffix(".mov") ||
+           display.hasSuffix(".mp4") || display.hasSuffix(".webm") || display.hasSuffix(".mov") {
+            return .video
+        }
+
+        // 9. 3D & Audio (checked before display poster image fallback)
+        if mime.hasPrefix("model/") || mime.hasPrefix("audio/") ||
+           uri.hasSuffix(".gltf") || uri.hasSuffix(".glb") ||
+           uri.hasSuffix(".mp3") || uri.hasSuffix(".wav") {
             return .audio3d
+        }
+
+        // 10. Static Images
+        if mime.hasPrefix("image/") || uri.hasSuffix(".png") || uri.hasSuffix(".jpg") || uri.hasSuffix(".jpeg") || uri.hasSuffix(".webp") ||
+           display.hasSuffix(".png") || display.hasSuffix(".jpg") || display.hasSuffix(".jpeg") || display.hasSuffix(".webp") {
+            return .staticImage
+        }
+
+        // 11. Fallback for tokens with display or thumbnail
+        if displayUri != nil || thumbnailUri != nil {
+            return .staticImage
         }
 
         return .unknown

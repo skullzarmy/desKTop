@@ -14,16 +14,41 @@ public struct GatewayStatus: Sendable {
 /// Actor managing IPFS & Arweave gateway endpoints with circuit-breaker quarantines and fallback racing
 public actor IPFSGatewayManager {
     public static let defaultIPFSGateways: [URL] = [
-        URL(string: "https://ipfs.io/ipfs/")!,
-        URL(string: "https://dweb.link/ipfs/")!,
         URL(string: "https://gateway.pinata.cloud/ipfs/")!,
-        URL(string: "https://cloudflare-ipfs.com/ipfs/")!
+        URL(string: "https://cloudflare-ipfs.com/ipfs/")!,
+        URL(string: "https://dweb.link/ipfs/")!,
+        URL(string: "https://ipfs.io/ipfs/")!
     ]
 
     public static let defaultArweaveGateways: [URL] = [
         URL(string: "https://arweave.net/")!,
         URL(string: "https://arweave.dev/")!
     ]
+
+    /// Quick synchronous resolution of any IPFS, Arweave, or HTTPS URI to a browser/view-loadable HTTPS URL
+    public static func resolvePublicURL(for uriString: String) -> URL? {
+        let trimmed = uriString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        if trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://") {
+            return URL(string: trimmed)
+        }
+
+        if trimmed.hasPrefix("ar://") {
+            let txId = String(trimmed.dropFirst(5))
+            return URL(string: "https://arweave.net/\(txId)")
+        }
+
+        var ipfsPath = trimmed
+        if ipfsPath.hasPrefix("ipfs://") {
+            ipfsPath = String(ipfsPath.dropFirst(7))
+        }
+        if ipfsPath.hasPrefix("ipfs/") {
+            ipfsPath = String(ipfsPath.dropFirst(5))
+        }
+
+        return URL(string: "https://gateway.pinata.cloud/ipfs/\(ipfsPath)")
+    }
 
     public static let quarantineDuration: TimeInterval = 15 * 60 // 15 minutes
 
