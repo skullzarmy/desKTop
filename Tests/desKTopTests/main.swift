@@ -60,6 +60,11 @@ await runSuite(name: "DesktopEngineTests") {
     try await DesktopEngineTests.run()
 }
 
+// Phase 4 Tests
+await runSuite(name: "GenerativeRuntimeTests") {
+    try GenerativeRuntimeTests.run()
+}
+
 print("\n==========================================")
 print("Results: \(totalPassed) passed, \(totalFailed) failed.")
 print("==========================================")
