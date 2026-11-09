@@ -10,6 +10,7 @@ public struct MenuBarContentView: View {
     public let onPrevious: () -> Void
     public let onRestartAnimation: () -> Void
     public let onOpenLibrary: () -> Void
+    public let onOpenSettings: () -> Void
 
     public init(
         currentToken: Binding<UnifiedToken?>,
@@ -19,7 +20,8 @@ public struct MenuBarContentView: View {
         onNext: @escaping () -> Void,
         onPrevious: @escaping () -> Void,
         onRestartAnimation: @escaping () -> Void,
-        onOpenLibrary: @escaping () -> Void
+        onOpenLibrary: @escaping () -> Void,
+        onOpenSettings: @escaping () -> Void = {}
     ) {
         self._currentToken = currentToken
         self._isPaused = isPaused
@@ -29,6 +31,7 @@ public struct MenuBarContentView: View {
         self.onPrevious = onPrevious
         self.onRestartAnimation = onRestartAnimation
         self.onOpenLibrary = onOpenLibrary
+        self.onOpenSettings = onOpenSettings
     }
 
     public var body: some View {
@@ -115,6 +118,10 @@ public struct MenuBarContentView: View {
 
             Button(action: onOpenLibrary) {
                 Label("Open Desktop Library...", systemImage: "photo.stack")
+            }
+
+            Button(action: onOpenSettings) {
+                Label("Settings...", systemImage: "gearshape")
             }
 
             Divider()

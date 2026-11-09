@@ -17,6 +17,7 @@ struct MenuBarPopoverWrapperView: View {
     let onPrevious: () -> Void
     let onRestartAnimation: () -> Void
     let onOpenLibrary: () -> Void
+    let onOpenSettings: () -> Void
 
     var body: some View {
         MenuBarContentView(
@@ -27,7 +28,8 @@ struct MenuBarPopoverWrapperView: View {
             onNext: onNext,
             onPrevious: onPrevious,
             onRestartAnimation: onRestartAnimation,
-            onOpenLibrary: onOpenLibrary
+            onOpenLibrary: onOpenLibrary,
+            onOpenSettings: onOpenSettings
         )
         .padding(14)
         .frame(width: 320)
@@ -131,6 +133,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             let paused = await self.repository.isRotationPaused()
             self.viewModel.isPaused = paused
             await self.syncDesktopState(forceApplyIfExternal: true)
+        }
+
+        // Automatically check for updates on launch if enabled
+        if UserDefaults.standard.object(forKey: "autoCheckUpdates") == nil ||
+           UserDefaults.standard.bool(forKey: "autoCheckUpdates") {
+            Task {
+                let res = await UpdateService.shared.checkForUpdates()
+                if case .updateAvailable(let newVer, _, _, _) = res {
+                    await MainActor.run {
+                        self.viewModel.statusMessage = "Update \(newVer) available"
+                    }
+                }
+            }
+        }
+
+        // React when user settings change (e.g. animation freeze, matte mode)
+        NotificationCenter.default.addObserver(
+            forName: Notification.Name("didChangeUserSettings"),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self = self, let current = self.viewModel.currentToken else { return }
+                await self.setTokenAsWallpaper(current)
+            }
         }
     }
 
@@ -296,6 +323,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             onRestartAnimation: {},
             onOpenLibrary: { [weak self] in
                 self?.openLibraryWindow()
+            },
+            onOpenSettings: { [weak self] in
+                self?.openSettingsWindow()
             }
         )
 
@@ -335,6 +365,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         openItem.target = self
         menu.addItem(openItem)
 
+        let settingsItem = NSMenuItem(title: "Settings…", action: #selector(openSettingsWindow), keyEquivalent: ",")
+        settingsItem.target = self
+        menu.addItem(settingsItem)
+
+        let updateItem = NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdatesMenuClicked), keyEquivalent: "u")
+        updateItem.target = self
+        menu.addItem(updateItem)
+
         let infoItem = NSMenuItem(title: "About desKTop…", action: #selector(showAboutDialog), keyEquivalent: "i")
         infoItem.target = self
         menu.addItem(infoItem)
@@ -346,6 +384,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         menu.addItem(quitItem)
 
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 4), in: button)
+    }
+
+    @objc private func openSettingsWindow() {
+        if popover.isShown {
+            popover.performClose(nil)
+        }
+        SettingsWindowController.shared.show(repository: repository)
+    }
+
+    @objc private func checkForUpdatesMenuClicked() {
+        openSettingsWindow()
     }
 
     @objc private func openLibraryWindow() {
@@ -423,6 +472,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             let matteMode = WallpaperMatteMode(rawValue: matteModeRaw) ?? .dynamicArtwork
             let customHex = UserDefaults.standard.string(forKey: "wallpaperCustomHex")
             let matteColor = ArtworkMatteEngine.resolveMatteColor(imageURL: fileURL, mode: matteMode, customHex: customHex)
+
+            // Energy & Motion tuning check:
+            let disableAnimations = UserDefaults.standard.bool(forKey: "disableAnimations")
+            let pauseOnBattery = UserDefaults.standard.bool(forKey: "pauseOnBattery")
+            let shouldFreeze = disableAnimations || (pauseOnBattery && PowerGuardian.shared.isOnBattery) || PowerGuardian.shared.isLowPowerModeEnabled
+
+            if shouldFreeze && (token.mediaCategory == .animatedImage || token.mediaCategory == .video || token.mediaCategory == .fxhash || token.mediaCategory == .aleatory || token.mediaCategory == .bootloader || token.mediaCategory == .editArt || token.mediaCategory == .interactiveHtml) {
+                if let controller = canvasControllers[displayUUID] {
+                    controller.dismiss()
+                }
+
+                let appliedURL = try wallpaperService.setDesktopWallpaper(
+                    imageURL: fileURL,
+                    tokenId: token.tokenId,
+                    for: nil,
+                    scaling: viewModel.scaling,
+                    matteColor: matteColor
+                )
+                self.lastAppliedWallpaperURL = appliedURL
+                self.isExternalWallpaperActive = false
+                self.viewModel.currentToken = token
+                self.viewModel.statusMessage = "Live on \(screen.localizedName) (Static Mode)"
+                UserDefaults.standard.set(token.id, forKey: "lastActiveTokenId")
+                self.rotationScheduler?.restartTimer()
+                return
+            }
 
             switch token.mediaCategory {
             case .animatedImage:

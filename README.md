@@ -2,13 +2,13 @@
 
 **A digital frame for Tezos art on macOS.**
 
-Enter any wallet address or `.tez` domain. desKTop turns your Mac's screen into a rotating gallery of on-chain art. It renders flat to wallpaper memory, so there are no open browser tabs, no background GPU drain, and no battery hit.
+Enter any wallet address or `.tez` domain. desKTop turns your Mac's screen into a rotating gallery of on-chain art. Flat-by-default architecture, optimized for reduced battery and system drain while supporting all media types.
 
 ---
 
 ### Features
 
-- **Flat-by-Default Architecture**: All generative, SVG, loop, and still artworks are composited headlessly and committed directly into the macOS wallpaper canvas (`NSWorkspace`). Drops to 0.0% CPU between rotations.
+- **Flat-by-Default Architecture**: Still artworks are composited headlessly and committed directly into the macOS wallpaper canvas (`NSWorkspace`), dropping to 0.0% CPU between rotations. Generative and animated pieces render on isolated, hardware-accelerated canvas layers that sleep when the display sleeps.
 - **Zero Keys, Zero Custody**: Read-only ledger queries via TzKT REST API, Objkt GraphQL, and Tezos Domains. No wallet connections, no seed phrases, no signing requests, and no telemetry.
 - **Smart Dynamic Galleries**: Save filter criteria or follow any creator's minted oeuvre or collector's holdings with a single click. As new pieces are minted on-chain, they stream into your desktop rotation automatically.
 - **Multi-Monitor Hardware Binding**: Screens are keyed to persistent hardware UUIDs (`CGDisplayCreateUUIDFromDisplayID`). Playlists stay assigned to their physical monitors across sleep, wake, and docking.
