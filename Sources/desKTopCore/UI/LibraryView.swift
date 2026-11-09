@@ -59,6 +59,7 @@ public struct LibraryView: View {
     @State private var tokens: [UnifiedToken] = []
     @State private var galleries: [DesktopGallery] = []
     @State private var objktCurations: [ObjktGallerySummary] = []
+    @State private var collectionNames: [String: String] = [:]
 
     @State private var selectedSidebarItem: LibrarySidebarItem = .allArt
     @State private var selectedToken: UnifiedToken?
@@ -90,6 +91,27 @@ public struct LibraryView: View {
         self.onSetWallpaper = onSetWallpaper
     }
 
+    // MARK: - Helpers
+
+    private func isTokenCreatedByUser(_ token: UnifiedToken) -> Bool {
+        if token.isCreated { return true }
+        let sourceAddresses = Set(sources.compactMap { $0.walletAddress?.lowercased() })
+        for creator in token.creators {
+            if sourceAddresses.contains(creator.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private var ownedTokensCount: Int {
+        tokens.filter { $0.isOwned }.count
+    }
+
+    private var createdTokensCount: Int {
+        tokens.filter { isTokenCreatedByUser($0) }.count
+    }
+
     // MARK: - Filtered Tokens Calculation
 
     public var displayedTokens: [UnifiedToken] {
@@ -101,7 +123,7 @@ public struct LibraryView: View {
         case .owned:
             baseTokens = tokens.filter { $0.isOwned }
         case .created:
-            baseTokens = tokens.filter { $0.isCreated }
+            baseTokens = tokens.filter { isTokenCreatedByUser($0) }
         case .customGallery(let gid):
             if let gallery = galleries.first(where: { $0.id == gid }) {
                 let idSet = Set(gallery.tokenIds)
@@ -155,31 +177,44 @@ public struct LibraryView: View {
 
     /// Derived list of unique contracts with token counts
     private var uniqueCollections: [CollectionContractItem] {
-        var counts: [String: (name: String, count: Int)] = [:]
+        var counts: [String: Int] = [:]
         for t in tokens {
-            let key = t.contract
-            let friendlyName: String = {
-                let lower = key.lowercased()
-                if lower == "kt1kea8z6vwxdjrvqtmraedvzsvxat3khace" { return "fxhash GENTK v1" }
-                if lower == "kt1u6ehmng3rqgzgwrjvm31tymgwgymo61gk" || lower == "kt1u6ehmnxjtkvawj4thczg4fsdahc21ssvi" { return "fxhash GENTK v2" }
-                if lower == "kt1efsnuqwlacdq3maa3gkpjtrmmqqes2nuv" { return "fxhash GENTK v3" }
-                if lower == "kt1rj6pbjhpwcm5rw5s2nbmefwbuwbdxton" { return "hic et nunc" }
-                if lower == "kt1st7grn4lwxb8y6bvgq8sdjgvqhd8sjghb" { return "Tez Frenz" }
-                if lower == "kt1cfdgefo44dn64jgtfhf2yqrzktkg1yfxm4" { return "House of Skratz" }
-                if lower == "kt1czvsa18hndyupv9ncxy3qj7p8yfdzkvqv" { return "Mooncakes" }
-                if lower == "kt1gbzmsxmnkjxgmdmlbugpflyupmulsmwks" { return "Tezos Domains" }
-                return String(key.prefix(8)) + "…" + String(key.suffix(4))
-            }()
-
-            if let existing = counts[key] {
-                counts[key] = (existing.name, existing.count + 1)
-            } else {
-                counts[key] = (friendlyName, 1)
-            }
+            counts[t.contract, default: 0] += 1
         }
 
-        return counts.map { CollectionContractItem(contract: $0.key, displayName: $0.value.name, count: $0.value.count) }
-            .sorted { $0.count > $1.count }
+        return counts.map { contract, count in
+            let lower = contract.lowercased()
+            let displayName = collectionNames[contract] ?? collectionNames[lower] ?? defaultContractAlias(for: contract)
+            return CollectionContractItem(contract: contract, displayName: displayName, count: count)
+        }
+        .sorted { $0.count > $1.count }
+    }
+
+    private func defaultContractAlias(for contract: String) -> String {
+        let lower = contract.lowercased()
+        if lower == "kt1kea8z6vwxdjrvqtmraedvzsvxat3khace" { return "fxhash GENTK v1" }
+        if lower == "kt1u6ehmng3rqgzgwrjvm31tymgwgymo61gk" || lower == "kt1u6ehmnxjtkvawj4thczg4fsdahc21ssvi" { return "fxhash GENTK v2" }
+        if lower == "kt1efsnuqwlacdq3maa3gkpjtrmmqqes2nuv" || lower == "kt1efsnuqwlawdd3o4pvfux1cah5gmdtrrvr" { return "fx(params)" }
+        if lower == "kt1rj6pbjhpwc3m5rw5s2nbmefwbuwbdxton" { return "hic et nunc" }
+        if lower == "kt1xacf6gkjfnkg3qmpfn6gep53momvjkj1e" { return "open objkt" }
+        if lower == "kt1czvsa18hndyupv9ncxy3qj7p8yfdzkvqv" { return "Mooncakes" }
+        if lower == "kt1dck1a29voepg9mgcgowngenjv6etwpbyq" { return "Life List of an AI Birder" }
+        if lower == "kt1rg7tkpgj7z42rkdhjcjzfxggeqtaqnepp" { return "Just Failed Fantasy" }
+        if lower == "kt1ft6ypzbepauv6btjq21cmzjgtcpnzmwh" { return "WTF IS A HORSE?" }
+        if lower == "kt1svctvagpukmunevbfuxhk9ixckbpw5f13h" { return "Playing With Skulls" }
+        if lower == "kt1thfytvz3k1qhsy2v77kjmdrnjebzm3mzg" { return "Pepoles Advent Calendar" }
+        if lower == "kt1v15gktzmo7h9azgvwcbjqqnnjnzn1agsc" { return "Super Chumbino Tezos Club 2026" }
+        if lower == "kt1vlvgtw6ukwzmipan8sncomjicitqbgf6" { return "Long Story Short" }
+        if lower == "kt1gez9shjdsg4nmtdktpvjdic3cf3bkzupsc" { return "DOOMBUDS" }
+        if lower == "kt1htqeasguu2jxfqw1px2fgsvmw yks4r9pw" { return "Not" }
+        if lower == "kt1kvk31zfry3nxam6ng7vnnfanhkckjkqnq" { return "Treasure Chest" }
+        if lower == "kt1gbzmsxmnkjxgmdmlbugpflyupmulsmwks" { return "Tezos Domains" }
+        if lower == "kt1vivwovfgscdaxjwoovejm1aysgz7s2tz" { return "Tezotopia NFT Registry" }
+        if lower == "kt1mchcpyoagydsr8y4rpkrx7b7vokmndbbh" { return "Misfits" }
+        if lower == "kt1rron7yf6yj7rm7afybc8zydvk3udxmupm" { return "TezTowers" }
+        if lower == "kt1st7grn4lwxb8y6bvgq8sdjgvqhd8sjghb" { return "Tez Frenz" }
+        if lower == "kt1cfdgefo44dn64jgtfhf2yqrzktkg1yfxm4" { return "House of Skratz" }
+        return String(contract.prefix(8)) + "…" + String(contract.suffix(4))
     }
 
     // MARK: - View Body
@@ -187,69 +222,69 @@ public struct LibraryView: View {
     public var body: some View {
         NavigationSplitView {
             // Sidebar Navigation
-            List {
+            List(selection: $selectedSidebarItem) {
                 // Section: Library Core
                 Section("Library") {
-                    NavigationLink(value: LibrarySidebarItem.allArt) {
-                        Label {
-                            HStack {
-                                Text("All Art")
-                                Spacer()
-                                Text("\(tokens.count)")
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
-                            }
-                        } icon: {
-                            Image(systemName: "photo.stack")
-                        }
+                    HStack {
+                        Label("All Art", systemImage: "photo.stack")
+                        Spacer()
+                        Text("\(tokens.count)")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                    .tag(LibrarySidebarItem.allArt)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        selectedSidebarItem = .allArt
                     }
 
-                    NavigationLink(value: LibrarySidebarItem.owned) {
-                        Label {
-                            HStack {
-                                Text("Owned")
-                                Spacer()
-                                Text("\(tokens.filter { $0.isOwned }.count)")
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
-                            }
-                        } icon: {
-                            Image(systemName: "tray.full")
-                        }
+                    HStack {
+                        Label("Owned", systemImage: "tray.full")
+                        Spacer()
+                        Text("\(ownedTokensCount)")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                    .tag(LibrarySidebarItem.owned)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        selectedSidebarItem = .owned
                     }
 
-                    NavigationLink(value: LibrarySidebarItem.created) {
-                        Label {
-                            HStack {
-                                Text("Created")
-                                Spacer()
-                                Text("\(tokens.filter { $0.isCreated }.count)")
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
-                            }
-                        } icon: {
-                            Image(systemName: "paintpalette")
-                        }
+                    HStack {
+                        Label("Created", systemImage: "paintpalette")
+                        Spacer()
+                        Text("\(createdTokensCount)")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                    .tag(LibrarySidebarItem.created)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        selectedSidebarItem = .created
                     }
                 }
 
                 // Section: desKTop Galleries (Custom Playlists)
                 Section {
                     ForEach(galleries) { gallery in
-                        NavigationLink(value: LibrarySidebarItem.customGallery(gallery.id)) {
-                            HStack {
-                                Label(gallery.name, systemImage: "sparkles.rectangle.stack")
-                                Spacer()
-                                if gallery.isActiveForRotation {
-                                    Circle()
-                                        .fill(Color.green)
-                                        .frame(width: 7, height: 7)
-                                        .help("Active rotation gallery")
-                                }
-                                Text("\(gallery.tokenIds.count)")
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
+                        HStack {
+                            Label(gallery.name, systemImage: "sparkles.rectangle.stack")
+                            Spacer()
+                            if gallery.isActiveForRotation {
+                                Circle()
+                                    .fill(Color.green)
+                                    .frame(width: 7, height: 7)
+                                    .help("Active rotation gallery")
                             }
+                            Text("\(gallery.tokenIds.count)")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                        .tag(LibrarySidebarItem.customGallery(gallery.id))
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            selectedSidebarItem = .customGallery(gallery.id)
                         }
                         .contextMenu {
                             Button(gallery.isActiveForRotation ? "Deactivate Rotation" : "Set Active for Rotation") {
@@ -290,15 +325,18 @@ public struct LibraryView: View {
                 if !objktCurations.isEmpty {
                     Section("objkt Curations") {
                         ForEach(objktCurations) { curation in
-                            NavigationLink(value: LibrarySidebarItem.objktCuration(curation.galleryId)) {
-                                HStack {
-                                    Label(curation.name, systemImage: "square.grid.2x2")
-                                        .lineLimit(1)
-                                    Spacer()
-                                    Text("\(curation.itemsCount)")
-                                        .font(.caption2)
-                                        .foregroundColor(.secondary)
-                                }
+                            HStack {
+                                Label(curation.name, systemImage: "square.grid.2x2")
+                                    .lineLimit(1)
+                                Spacer()
+                                Text("\(curation.itemsCount)")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                            .tag(LibrarySidebarItem.objktCuration(curation.galleryId))
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                selectedSidebarItem = .objktCuration(curation.galleryId)
                             }
                             .help(curation.description ?? curation.name)
                         }
@@ -308,16 +346,19 @@ public struct LibraryView: View {
                 // Section: Collections / Contracts
                 if !uniqueCollections.isEmpty {
                     Section("Collections") {
-                        ForEach(uniqueCollections.prefix(8)) { col in
-                            NavigationLink(value: LibrarySidebarItem.collection(col.contract)) {
-                                HStack {
-                                    Label(col.displayName, systemImage: "rectangle.stack")
-                                        .lineLimit(1)
-                                    Spacer()
-                                    Text("\(col.count)")
-                                        .font(.caption2)
-                                        .foregroundColor(.secondary)
-                                }
+                        ForEach(uniqueCollections.prefix(25)) { col in
+                            HStack {
+                                Label(col.displayName, systemImage: "rectangle.stack")
+                                    .lineLimit(1)
+                                Spacer()
+                                Text("\(col.count)")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                            .tag(LibrarySidebarItem.collection(col.contract))
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                selectedSidebarItem = .collection(col.contract)
                             }
                         }
                     }
@@ -346,7 +387,7 @@ public struct LibraryView: View {
                     .padding(.top, 4)
                 }
             }
-            .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 320)
+            .navigationSplitViewColumnWidth(min: 240, ideal: 270, max: 340)
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button(action: { isSourceSheetPresented = true }) {
@@ -431,20 +472,26 @@ public struct LibraryView: View {
                     }
                 )
             } else {
-                VStack(spacing: 12) {
+                VStack(spacing: 14) {
                     Image(systemName: "photo.on.rectangle.angled")
-                        .font(.system(size: 48))
-                        .foregroundColor(.secondary.opacity(0.6))
+                        .font(.system(size: 44))
+                        .foregroundColor(.secondary.opacity(0.5))
                     Text("Select an artwork to inspect details")
                         .font(.headline)
                         .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
                     Text("Right-click any artwork to set wallpaper or add to a desKTop gallery")
                         .font(.caption)
-                        .foregroundColor(.secondary.opacity(0.8))
+                        .foregroundColor(.secondary.opacity(0.7))
+                        .multilineTextAlignment(.center)
+                        .lineSpacing(3)
                 }
+                .padding(.horizontal, 28)
+                .padding(.vertical, 24)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+        .navigationSplitViewColumnWidth(min: 280, ideal: 320, max: 420)
         .task {
             await reloadData()
         }
@@ -463,15 +510,34 @@ public struct LibraryView: View {
     // MARK: - Subviews
 
     private var filterToolbar: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             // Format Filter Menu
-            Picker("Format", selection: $selectedFormatFilter) {
+            Menu {
                 ForEach(FormatFilter.allCases) { filter in
-                    Text(filter.rawValue).tag(filter)
+                    Button(action: { selectedFormatFilter = filter }) {
+                        if selectedFormatFilter == filter {
+                            Label(filter.rawValue, systemImage: "checkmark")
+                        } else {
+                            Text(filter.rawValue)
+                        }
+                    }
                 }
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "photo")
+                        .font(.caption)
+                    Text(selectedFormatFilter.rawValue)
+                        .fontWeight(.medium)
+                        .lineLimit(1)
+                    Image(systemName: "chevron.down")
+                        .font(.caption2)
+                }
+                .padding(.horizontal, 9)
+                .padding(.vertical, 5)
+                .background(Color.secondary.opacity(0.12))
+                .cornerRadius(6)
             }
-            .pickerStyle(.menu)
-            .frame(maxWidth: 150)
+            .menuStyle(.borderlessButton)
 
             // Collection Dropdown Filter
             Menu {
@@ -480,24 +546,61 @@ public struct LibraryView: View {
                 }
                 Divider()
                 ForEach(uniqueCollections) { col in
-                    Button("\(col.displayName) (\(col.count))") {
+                    Button(action: {
                         selectedContractFilter = col.contract
+                    }) {
+                        if selectedContractFilter == col.contract {
+                            Label("\(col.displayName) (\(col.count))", systemImage: "checkmark")
+                        } else {
+                            Text("\(col.displayName) (\(col.count))")
+                        }
                     }
                 }
             } label: {
-                Label(selectedContractFilter == nil ? "All Collections" : "Collection Filtered", systemImage: "line.3.horizontal.decrease.circle")
+                HStack(spacing: 5) {
+                    Image(systemName: "rectangle.stack")
+                        .font(.caption)
+                    let title = selectedContractFilter.flatMap { c in uniqueCollections.first(where: { $0.contract == c })?.displayName } ?? "All Collections"
+                    Text(title)
+                        .fontWeight(.medium)
+                        .lineLimit(1)
+                    Image(systemName: "chevron.down")
+                        .font(.caption2)
+                }
+                .padding(.horizontal, 9)
+                .padding(.vertical, 5)
+                .background(Color.secondary.opacity(0.12))
+                .cornerRadius(6)
             }
             .menuStyle(.borderlessButton)
-            .fixedSize()
 
             // Sort Menu
-            Picker("Sort", selection: $sortOption) {
+            Menu {
                 ForEach(TokenSortOption.allCases) { opt in
-                    Text(opt.rawValue).tag(opt)
+                    Button(action: { sortOption = opt }) {
+                        if sortOption == opt {
+                            Label(opt.rawValue, systemImage: "checkmark")
+                        } else {
+                            Text(opt.rawValue)
+                        }
+                    }
                 }
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "arrow.up.arrow.down")
+                        .font(.caption)
+                    Text(sortOption.rawValue)
+                        .fontWeight(.medium)
+                        .lineLimit(1)
+                    Image(systemName: "chevron.down")
+                        .font(.caption2)
+                }
+                .padding(.horizontal, 9)
+                .padding(.vertical, 5)
+                .background(Color.secondary.opacity(0.12))
+                .cornerRadius(6)
             }
-            .pickerStyle(.menu)
-            .frame(maxWidth: 170)
+            .menuStyle(.borderlessButton)
 
             Spacer()
 
@@ -578,7 +681,8 @@ public struct LibraryView: View {
             let name = objktCurations.first(where: { $0.galleryId == cid })?.name ?? "Curation"
             return "\(name) (\(displayedTokens.count))"
         case .collection(let contract):
-            return "Collection \(String(contract.prefix(8)))… (\(displayedTokens.count))"
+            let displayName = collectionNames[contract] ?? collectionNames[contract.lowercased()] ?? defaultContractAlias(for: contract)
+            return "\(displayName) (\(displayedTokens.count))"
         }
     }
 
@@ -636,6 +740,18 @@ public struct LibraryView: View {
         self.tokens = await repository.getTokens()
         self.galleries = await repository.getGalleries()
         self.objktCurations = await repository.getObjktCurations()
+        resolveTopCollections()
+    }
+
+    private func resolveTopCollections() {
+        let contracts = Array(Set(tokens.map { $0.contract }))
+        guard !contracts.isEmpty else { return }
+        Task {
+            let names = await CollectionResolver.shared.resolveNames(for: contracts)
+            await MainActor.run {
+                self.collectionNames.merge(names) { _, new in new }
+            }
+        }
     }
 
     private func syncAllSources() async {
@@ -745,11 +861,11 @@ struct TokenCardView: View {
         VStack(alignment: .leading, spacing: 6) {
             // Artwork Image Box
             ZStack(alignment: .bottomTrailing) {
+                Color.secondary.opacity(0.08)
+
                 ArtworkThumbnailView(token: token, contentMode: .fill)
-                    .frame(maxWidth: .infinity)
-                    .aspectRatio(1.0, contentMode: .fit)
+                    .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
                     .clipped()
-                    .cornerRadius(8)
 
                 // Top Left Live Badge
                 if isLiveOnDesktop {
@@ -799,7 +915,9 @@ struct TokenCardView: View {
                     .transition(.opacity)
                 }
             }
-            .background(Color.secondary.opacity(0.08))
+            .frame(minWidth: 0, maxWidth: .infinity)
+            .aspectRatio(1.0, contentMode: .fit)
+            .clipped()
             .cornerRadius(8)
 
             // Metadata info
@@ -866,6 +984,17 @@ struct TokenCardView: View {
 
 // MARK: - Native Animated GIF Player View
 
+final class NonExpandingImageView: NSImageView {
+    override var intrinsicContentSize: NSSize {
+        return NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric)
+    }
+
+    override func layout() {
+        super.layout()
+        layer?.masksToBounds = true
+    }
+}
+
 public struct AnimatedGIFView: NSViewRepresentable {
     let url: URL?
     let contentMode: ContentMode
@@ -876,15 +1005,21 @@ public struct AnimatedGIFView: NSViewRepresentable {
     }
 
     public func makeNSView(context: Context) -> NSImageView {
-        let view = NSImageView()
-        view.imageScaling = contentMode == .fill ? .scaleAxesIndependently : .scaleProportionallyUpOrDown
+        let view = NonExpandingImageView()
+        view.imageScaling = .scaleProportionallyUpOrDown
         view.animates = true
         view.canDrawSubviewsIntoLayer = true
+        view.wantsLayer = true
+        view.layer?.masksToBounds = true
+        view.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        view.setContentHuggingPriority(.defaultLow, for: .vertical)
+        view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        view.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
         return view
     }
 
     public func updateNSView(_ nsView: NSImageView, context: Context) {
-        nsView.imageScaling = contentMode == .fill ? .scaleAxesIndependently : .scaleProportionallyUpOrDown
+        nsView.imageScaling = .scaleProportionallyUpOrDown
         nsView.animates = true
         guard let url = url else {
             nsView.image = nil
@@ -926,6 +1061,7 @@ public struct ArtworkThumbnailView: View {
     public var body: some View {
         if token.mediaCategory == .animatedImage, let url = targetURL {
             AnimatedGIFView(url: url, contentMode: contentMode)
+                .clipped()
         } else if let url = targetURL {
             AsyncImage(url: url) { phase in
                 switch phase {
@@ -939,12 +1075,14 @@ public struct ArtworkThumbnailView: View {
                     image
                         .resizable()
                         .aspectRatio(contentMode: contentMode)
+                        .clipped()
                 case .failure:
                     placeholderView
                 @unknown default:
                     placeholderView
                 }
             }
+            .clipped()
         } else {
             placeholderView
         }

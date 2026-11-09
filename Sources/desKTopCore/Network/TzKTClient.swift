@@ -161,14 +161,35 @@ public actor TzKTClient {
         let name = metadata["name"] as? String ?? "Token #\(tokenId)"
         let description = metadata["description"] as? String
 
-        // Creators extraction
+        // Creators extraction: support array of strings, array of dicts, single string, or creator/author keys
         var creators: [String] = []
         if let creatorsArray = metadata["creators"] as? [String] {
             creators = creatorsArray
+        } else if let creatorsAnyArray = metadata["creators"] as? [Any] {
+            for item in creatorsAnyArray {
+                if let str = item as? String {
+                    creators.append(str)
+                } else if let dict = item as? [String: Any] {
+                    if let addr = (dict["address"] as? String) ?? (dict["creator"] as? String) ?? (dict["holder"] as? String) {
+                        creators.append(addr)
+                    } else if let name = dict["name"] as? String {
+                        creators.append(name)
+                    }
+                }
+            }
         } else if let creatorString = metadata["creators"] as? String {
             creators = [creatorString]
+        } else if let singleCreator = metadata["creator"] as? String {
+            creators = [singleCreator]
+        } else if let authors = metadata["authors"] as? [String] {
+            creators = authors
         } else if let tags = metadata["tags"] as? [String] {
             creators = tags.filter { $0.hasPrefix("creator:") }
+        }
+
+        // Check if root token object has creator
+        if creators.isEmpty, let rootCreator = dict["creator"] as? [String: Any], let addr = rootCreator["address"] as? String {
+            creators = [addr]
         }
 
         let artifactUri = metadata["artifactUri"] as? String
@@ -238,6 +259,9 @@ public actor TzKTClient {
             if let str = v as? String {
                 rawMeta[k] = str
             }
+        }
+        if let contractAlias = contractDict["alias"] as? String, !contractAlias.isEmpty {
+            rawMeta["contractAlias"] = contractAlias
         }
 
         let mimeType = metadata["mimeType"] as? String ?? formats.first?.mimeType

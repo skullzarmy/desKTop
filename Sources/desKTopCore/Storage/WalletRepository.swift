@@ -24,6 +24,40 @@ public struct RepositoryState: Codable, Sendable {
         self.galleries = galleries
         self.objktCurations = objktCurations
     }
+
+    enum CodingKeys: String, CodingKey {
+        case sources, whitelistedIds, blacklistedIds, tokens, galleries, objktCurations
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.sources = try container.decodeIfPresent([WalletSource].self, forKey: .sources) ?? []
+        self.whitelistedIds = try container.decodeIfPresent(Set<String>.self, forKey: .whitelistedIds) ?? []
+        self.blacklistedIds = try container.decodeIfPresent(Set<String>.self, forKey: .blacklistedIds) ?? []
+        self.tokens = try container.decodeIfPresent([UnifiedToken].self, forKey: .tokens) ?? []
+        self.galleries = try container.decodeIfPresent([DesktopGallery].self, forKey: .galleries) ?? []
+        self.objktCurations = try container.decodeIfPresent([ObjktGallerySummary].self, forKey: .objktCurations) ?? []
+    }
+
+    public mutating func markCreatedTokens() {
+        var sourceAddresses: Set<String> = []
+        for s in sources {
+            if let addr = s.walletAddress {
+                sourceAddresses.insert(addr.lowercased())
+            }
+        }
+        guard !sourceAddresses.isEmpty else { return }
+        for i in 0..<tokens.count {
+            if !tokens[i].isCreated {
+                let isCreator = tokens[i].creators.contains { c in
+                    sourceAddresses.contains(c.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+                }
+                if isCreator {
+                    tokens[i].isCreated = true
+                }
+            }
+        }
+    }
 }
 
 /// Actor managing local file-based persistence for user sources, preferences, custom galleries, and token index
@@ -45,7 +79,8 @@ public actor WalletRepository {
 
         // Load existing state if available
         if let data = try? Data(contentsOf: storageURL),
-           let loaded = try? JSONDecoder().decode(RepositoryState.self, from: data) {
+           var loaded = try? JSONDecoder().decode(RepositoryState.self, from: data) {
+            loaded.markCreatedTokens()
             self.state = loaded
         } else {
             self.state = RepositoryState()
@@ -123,6 +158,7 @@ public actor WalletRepository {
             }
         }
         state.tokens = Array(tokenMap.values)
+        state.markCreatedTokens()
         try persist()
     }
 

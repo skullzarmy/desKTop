@@ -38,6 +38,14 @@ public struct WalletSource: Identifiable, Hashable, Codable, Sendable {
         self.tokenCount = tokenCount
     }
 
+    /// Convenience accessor for wallet address if source is a wallet
+    public var walletAddress: String? {
+        if case .wallet(let addr, _) = type {
+            return addr.raw
+        }
+        return nil
+    }
+
     /// Convenience factory for wallet addresses
     public static func fromAddress(_ address: TezosAddress, domain: TezosDomain? = nil, label: String? = nil) -> WalletSource {
         let name = label ?? domain?.normalized ?? address.raw

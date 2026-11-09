@@ -100,6 +100,33 @@ public struct UnifiedToken: Identifiable, Hashable, Codable, Sendable {
     public var isOwned: Bool
     public var isCreated: Bool
 
+    enum CodingKeys: String, CodingKey {
+        case contract, tokenId, name, description, creators, mimeType
+        case artifactUri, displayUri, thumbnailUri, formats, attributes
+        case supply, decimals, aleatory, rawMetadata, isOwned, isCreated
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.contract = try container.decode(String.self, forKey: .contract)
+        self.tokenId = try container.decode(String.self, forKey: .tokenId)
+        self.name = try container.decode(String.self, forKey: .name)
+        self.description = try container.decodeIfPresent(String.self, forKey: .description)
+        self.creators = try container.decodeIfPresent([String].self, forKey: .creators) ?? []
+        self.mimeType = try container.decodeIfPresent(String.self, forKey: .mimeType)
+        self.artifactUri = try container.decodeIfPresent(String.self, forKey: .artifactUri)
+        self.displayUri = try container.decodeIfPresent(String.self, forKey: .displayUri)
+        self.thumbnailUri = try container.decodeIfPresent(String.self, forKey: .thumbnailUri)
+        self.formats = try container.decodeIfPresent([TokenFormat].self, forKey: .formats) ?? []
+        self.attributes = try container.decodeIfPresent([TokenAttribute].self, forKey: .attributes) ?? []
+        self.supply = try container.decodeIfPresent(Int.self, forKey: .supply)
+        self.decimals = try container.decodeIfPresent(Int.self, forKey: .decimals)
+        self.aleatory = try container.decodeIfPresent(AleatoryMetadata.self, forKey: .aleatory)
+        self.rawMetadata = try container.decodeIfPresent([String: String].self, forKey: .rawMetadata)
+        self.isOwned = try container.decodeIfPresent(Bool.self, forKey: .isOwned) ?? true
+        self.isCreated = try container.decodeIfPresent(Bool.self, forKey: .isCreated) ?? false
+    }
+
     public init(
         contract: String,
         tokenId: String,
