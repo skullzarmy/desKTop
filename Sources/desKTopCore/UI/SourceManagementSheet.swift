@@ -66,8 +66,28 @@ public struct SourceManagementSheet: View {
 
             Divider()
 
-            Text("Active Sources (\(sources.count))")
-                .font(.headline)
+            HStack {
+                Text("Active Sources (\(sources.count))")
+                    .font(.headline)
+
+                Spacer()
+
+                if !sources.isEmpty {
+                    Button(action: {
+                        Task {
+                            for s in sources {
+                                await syncSource(s)
+                            }
+                        }
+                    }) {
+                        Label("Sync All", systemImage: "arrow.clockwise")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(isResolving)
+                }
+            }
 
             List {
                 ForEach(sources) { source in
@@ -97,6 +117,18 @@ public struct SourceManagementSheet: View {
                             .font(.caption)
                             .foregroundColor(.secondary)
 
+                        Button {
+                            Task {
+                                await syncSource(source)
+                            }
+                        } label: {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                        .buttonStyle(.plain)
+                        .help("Re-fetch tokens for this source")
+                        .disabled(isResolving)
+                        .padding(.leading, 8)
+
                         Button(role: .destructive) {
                             Task {
                                 try? await repository.removeSource(id: source.id)
@@ -118,6 +150,62 @@ public struct SourceManagementSheet: View {
         .frame(width: 540, height: 460)
         .task {
             await loadSources()
+        }
+    }
+
+    private func syncSource(_ source: WalletSource) async {
+        isResolving = true
+        statusMessage = "Syncing \(source.displayName)..."
+        defer { isResolving = false }
+
+        let tzkt = TzKTClient()
+        let filter = FungibleFilterEngine()
+
+        switch source.type {
+        case .wallet(let address, _):
+            do {
+                let tokens = try await tzkt.fetchAllTokens(for: address) { count in
+                    Task { @MainActor in
+                        self.statusMessage = "Syncing \(source.displayName) (\(count) loaded)..."
+                    }
+                }
+                let artTokens = filter.filter(tokens)
+                var updated = source
+                updated.tokenCount = artTokens.count
+                try await repository.updateSource(updated)
+                try await repository.upsertTokens(artTokens)
+                await loadSources()
+                onSourcesChanged()
+            } catch {
+                errorMessage = "Sync failed: \(error.localizedDescription)"
+            }
+        case .collection(let contract, _):
+            do {
+                let tokens = try await tzkt.fetchContractTokens(contract: contract, limit: 500)
+                let artTokens = filter.filter(tokens)
+                var updated = source
+                updated.tokenCount = artTokens.count
+                try await repository.updateSource(updated)
+                try await repository.upsertTokens(artTokens)
+                await loadSources()
+                onSourcesChanged()
+            } catch {
+                errorMessage = "Sync failed: \(error.localizedDescription)"
+            }
+        case .objktCuration(let id, _):
+            let objkt = ObjktClient()
+            do {
+                let tokens = try await objkt.fetchCurationTokens(slugOrId: id, limit: 500)
+                let artTokens = filter.filter(tokens)
+                var updated = source
+                updated.tokenCount = artTokens.count
+                try await repository.updateSource(updated)
+                try await repository.upsertTokens(artTokens)
+                await loadSources()
+                onSourcesChanged()
+            } catch {
+                errorMessage = "Sync failed: \(error.localizedDescription)"
+            }
         }
     }
 

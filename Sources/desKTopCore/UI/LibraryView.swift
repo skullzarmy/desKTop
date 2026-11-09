@@ -99,6 +99,16 @@ public struct LibraryView: View {
                         Label("Add Source", systemImage: "plus")
                     }
                 }
+                ToolbarItem(placement: .automatic) {
+                    Button(action: {
+                        Task {
+                            await syncAllSources()
+                        }
+                    }) {
+                        Label("Sync", systemImage: "arrow.clockwise")
+                    }
+                    .help("Sync tokens across all active sources")
+                }
             }
         } content: {
             // Main Art Grid
@@ -146,6 +156,42 @@ public struct LibraryView: View {
     private func reloadData() async {
         self.sources = await repository.getSources()
         self.tokens = await repository.getTokens()
+    }
+
+    private func syncAllSources() async {
+        let tzkt = TzKTClient()
+        let filter = FungibleFilterEngine()
+        let objkt = ObjktClient()
+
+        for source in sources {
+            switch source.type {
+            case .wallet(let address, _):
+                if let tokens = try? await tzkt.fetchAllTokens(for: address) {
+                    let artTokens = filter.filter(tokens)
+                    var updated = source
+                    updated.tokenCount = artTokens.count
+                    try? await repository.updateSource(updated)
+                    try? await repository.upsertTokens(artTokens)
+                }
+            case .collection(let contract, _):
+                if let tokens = try? await tzkt.fetchContractTokens(contract: contract, limit: 500) {
+                    let artTokens = filter.filter(tokens)
+                    var updated = source
+                    updated.tokenCount = artTokens.count
+                    try? await repository.updateSource(updated)
+                    try? await repository.upsertTokens(artTokens)
+                }
+            case .objktCuration(let id, _):
+                if let tokens = try? await objkt.fetchCurationTokens(slugOrId: id, limit: 500) {
+                    let artTokens = filter.filter(tokens)
+                    var updated = source
+                    updated.tokenCount = artTokens.count
+                    try? await repository.updateSource(updated)
+                    try? await repository.upsertTokens(artTokens)
+                }
+            }
+        }
+        await reloadData()
     }
 }
 
