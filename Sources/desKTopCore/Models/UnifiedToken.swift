@@ -165,6 +165,14 @@ public struct UnifiedToken: Identifiable, Hashable, Codable, Sendable {
         self.isCreated = isCreated
     }
 
+    /// Date token was acquired or minted
+    public var acquiredDate: Date? {
+        if let raw = rawMetadata?["lastTime"] ?? rawMetadata?["firstTime"] ?? rawMetadata?["timestamp"] {
+            return ISO8601DateFormatter().date(from: raw)
+        }
+        return nil
+    }
+
     /// Primary URI to render as wallpaper (displayUri preferred for audio/3D, artifactUri preferred for visuals)
     public var primaryWallpaperUri: String? {
         if mediaCategory == .audio3d {

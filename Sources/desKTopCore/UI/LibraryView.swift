@@ -6,9 +6,10 @@ public enum LibrarySidebarItem: Hashable {
     case allArt
     case owned
     case created
+    case collections
+    case collection(String)    // contract address
     case customGallery(UUID)
     case objktCuration(String) // galleryId
-    case collection(String)    // contract address
 }
 
 /// Format category filter (UI filter, NOT hardcoded tabs)
@@ -34,15 +35,29 @@ public enum FormatFilter: String, CaseIterable, Identifiable {
     }
 }
 
-/// Sort options for artwork collection
+/// Sort fields for artwork collection
 public enum TokenSortOption: String, CaseIterable, Identifiable {
-    case recentlyAdded = "Recently Added"
-    case titleAsc = "Title (A – Z)"
-    case titleDesc = "Title (Z – A)"
-    case supplyAsc = "Edition Size (Low – High)"
-    case supplyDesc = "Edition Size (High – Low)"
+    case dateAcquired = "Date Added"
+    case mintDate = "Mint Date (Token ID)"
+    case title = "Title (A–Z)"
+    case supply = "Edition Size"
 
     public var id: String { rawValue }
+}
+
+/// Direction for sorting
+public enum SortDirection: String, CaseIterable, Identifiable {
+    case ascending = "Ascending"
+    case descending = "Descending"
+
+    public var id: String { rawValue }
+
+    public var iconName: String {
+        switch self {
+        case .ascending: return "arrow.up"
+        case .descending: return "arrow.down"
+        }
+    }
 }
 
 /// Summary of unique contracts in the collection
@@ -67,10 +82,16 @@ public struct LibraryView: View {
 
     // Filters and controls
     @State private var searchText: String = ""
+    @State private var collectionSearchText: String = ""
     @State private var selectedFormatFilter: FormatFilter = .all
     @State private var selectedContractFilter: String? = nil
-    @State private var sortOption: TokenSortOption = .recentlyAdded
+    @State private var sortOption: TokenSortOption = .dateAcquired
+    @State private var sortDirection: SortDirection = .descending
     @State private var gridSize: Double = 180
+
+    // Wallpaper Matte Settings
+    @AppStorage("wallpaperMatteMode") private var matteMode: WallpaperMatteMode = .dynamicArtwork
+    @AppStorage("wallpaperCustomHex") private var customHex: String = "#000000"
 
     // Sheets & modals
     @State private var isSourceSheetPresented: Bool = false
@@ -109,7 +130,7 @@ public struct LibraryView: View {
     }
 
     private var createdTokensCount: Int {
-        tokens.filter { isTokenCreatedByUser($0) }.count
+        tokens.filter { $0.isCreated || isTokenCreatedByUser($0) }.count
     }
 
     // MARK: - Filtered Tokens Calculation
@@ -123,7 +144,9 @@ public struct LibraryView: View {
         case .owned:
             baseTokens = tokens.filter { $0.isOwned }
         case .created:
-            baseTokens = tokens.filter { isTokenCreatedByUser($0) }
+            baseTokens = tokens.filter { $0.isCreated || isTokenCreatedByUser($0) }
+        case .collections:
+            baseTokens = tokens
         case .customGallery(let gid):
             if let gallery = galleries.first(where: { $0.id == gid }) {
                 let idSet = Set(gallery.tokenIds)
@@ -132,7 +155,6 @@ public struct LibraryView: View {
                 baseTokens = []
             }
         case .objktCuration(let cid):
-            // Match tokens belonging to curation if any
             baseTokens = tokens.filter { $0.rawMetadata?["curationId"] == cid }
         case .collection(let contract):
             baseTokens = tokens.filter { $0.contract.lowercased() == contract.lowercased() }
@@ -144,6 +166,7 @@ public struct LibraryView: View {
                 token.name.localizedCaseInsensitiveContains(searchText) ||
                 token.creators.contains(where: { $0.localizedCaseInsensitiveContains(searchText) }) ||
                 token.contract.localizedCaseInsensitiveContains(searchText) ||
+                (resolvedName(for: token.contract).localizedCaseInsensitiveContains(searchText)) ||
                 token.tokenId.contains(searchText)
             }
         }
@@ -153,41 +176,82 @@ public struct LibraryView: View {
             baseTokens = baseTokens.filter { selectedFormatFilter.matches($0.mediaCategory) }
         }
 
-        // 4. Filter by collection dropdown
+        // 4. Filter by collection filter
         if let contractFilter = selectedContractFilter, !contractFilter.isEmpty {
             baseTokens = baseTokens.filter { $0.contract.lowercased() == contractFilter.lowercased() }
         }
 
         // 5. Apply sorting
-        switch sortOption {
-        case .recentlyAdded:
-            break
-        case .titleAsc:
-            baseTokens.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-        case .titleDesc:
-            baseTokens.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedDescending }
-        case .supplyAsc:
-            baseTokens.sort { ($0.supply ?? 1) < ($1.supply ?? 1) }
-        case .supplyDesc:
-            baseTokens.sort { ($0.supply ?? 1) > ($1.supply ?? 1) }
+        let isAsc = (sortDirection == .ascending)
+        baseTokens.sort { a, b in
+            switch sortOption {
+            case .dateAcquired:
+                let dateA = a.acquiredDate ?? Date.distantPast
+                let dateB = b.acquiredDate ?? Date.distantPast
+                if dateA != dateB {
+                    return isAsc ? (dateA < dateB) : (dateA > dateB)
+                }
+                let idA = Int(a.tokenId) ?? 0
+                let idB = Int(b.tokenId) ?? 0
+                return isAsc ? (idA < idB) : (idA > idB)
+
+            case .mintDate:
+                let idA = Int(a.tokenId) ?? 0
+                let idB = Int(b.tokenId) ?? 0
+                return isAsc ? (idA < idB) : (idA > idB)
+
+            case .title:
+                let compare = a.name.localizedCaseInsensitiveCompare(b.name)
+                return isAsc ? (compare == .orderedAscending) : (compare == .orderedDescending)
+
+            case .supply:
+                let supA = a.supply ?? 1
+                let supB = b.supply ?? 1
+                return isAsc ? (supA < supB) : (supA > supB)
+            }
         }
 
         return baseTokens
     }
 
-    /// Derived list of unique contracts with token counts
+    /// Derived list of unique contracts with token counts dynamically scoped to the current context
     private var uniqueCollections: [CollectionContractItem] {
         var counts: [String: Int] = [:]
-        for t in tokens {
+        let scopedTokens: [UnifiedToken]
+        switch selectedSidebarItem {
+        case .created:
+            scopedTokens = tokens.filter { $0.isCreated || isTokenCreatedByUser($0) }
+        case .owned:
+            scopedTokens = tokens.filter { $0.isOwned }
+        case .customGallery(let gid):
+            if let gallery = galleries.first(where: { $0.id == gid }) {
+                let idSet = Set(gallery.tokenIds)
+                scopedTokens = tokens.filter { idSet.contains($0.id) }
+            } else {
+                scopedTokens = []
+            }
+        case .objktCuration(let cid):
+            scopedTokens = tokens.filter { $0.rawMetadata?["curationId"] == cid }
+        default:
+            scopedTokens = tokens
+        }
+
+        for t in scopedTokens {
             counts[t.contract, default: 0] += 1
         }
 
         return counts.map { contract, count in
-            let lower = contract.lowercased()
-            let displayName = collectionNames[contract] ?? collectionNames[lower] ?? defaultContractAlias(for: contract)
-            return CollectionContractItem(contract: contract, displayName: displayName, count: count)
+            CollectionContractItem(contract: contract, displayName: resolvedName(for: contract), count: count)
         }
         .sorted { $0.count > $1.count }
+    }
+
+    public func resolvedName(for contract: String) -> String {
+        let lower = contract.lowercased()
+        if let name = collectionNames[contract] ?? collectionNames[lower] {
+            return name
+        }
+        return defaultContractAlias(for: contract)
     }
 
     private func defaultContractAlias(for contract: String) -> String {
@@ -236,6 +300,7 @@ public struct LibraryView: View {
                     .contentShape(Rectangle())
                     .onTapGesture {
                         selectedSidebarItem = .allArt
+                        selectedContractFilter = nil
                     }
 
                     HStack {
@@ -249,6 +314,7 @@ public struct LibraryView: View {
                     .contentShape(Rectangle())
                     .onTapGesture {
                         selectedSidebarItem = .owned
+                        selectedContractFilter = nil
                     }
 
                     HStack {
@@ -262,6 +328,20 @@ public struct LibraryView: View {
                     .contentShape(Rectangle())
                     .onTapGesture {
                         selectedSidebarItem = .created
+                        selectedContractFilter = nil
+                    }
+
+                    HStack {
+                        Label("Collections", systemImage: "rectangle.stack")
+                        Spacer()
+                        Text("\(uniqueCollections.count)")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                    .tag(LibrarySidebarItem.collections)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        selectedSidebarItem = .collections
                     }
                 }
 
@@ -343,27 +423,6 @@ public struct LibraryView: View {
                     }
                 }
 
-                // Section: Collections / Contracts
-                if !uniqueCollections.isEmpty {
-                    Section("Collections") {
-                        ForEach(uniqueCollections.prefix(25)) { col in
-                            HStack {
-                                Label(col.displayName, systemImage: "rectangle.stack")
-                                    .lineLimit(1)
-                                Spacer()
-                                Text("\(col.count)")
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
-                            }
-                            .tag(LibrarySidebarItem.collection(col.contract))
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                selectedSidebarItem = .collection(col.contract)
-                            }
-                        }
-                    }
-                }
-
                 // Section: Sources
                 Section("Sources") {
                     ForEach(sources) { source in
@@ -397,69 +456,22 @@ public struct LibraryView: View {
                 }
             }
         } content: {
-            // Main Content: Filter bar + Artwork Grid
-            VStack(spacing: 0) {
-                // Secondary Filter Toolbar
-                filterToolbar
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .background(.ultraThinMaterial)
-
-                Divider()
-
-                // Main Art Grid
-                ScrollView {
-                    if displayedTokens.isEmpty {
-                        emptyStateView
-                            .frame(maxWidth: .infinity, minHeight: 360)
-                    } else {
-                        LazyVGrid(
-                            columns: [GridItem(.adaptive(minimum: gridSize, maximum: gridSize * 1.5), spacing: 14)],
-                            spacing: 14
-                        ) {
-                            ForEach(displayedTokens) { token in
-                                TokenCardView(
-                                    token: token,
-                                    isSelected: selectedToken?.id == token.id,
-                                    isLiveOnDesktop: currentWallpaperTokenId == token.tokenId,
-                                    galleries: galleries,
-                                    onSelect: {
-                                        selectedToken = token
-                                    },
-                                    onSetAsWallpaper: {
-                                        currentWallpaperTokenId = token.tokenId
-                                        onSetWallpaper(token)
-                                    },
-                                    onAddToGallery: { gid in
-                                        Task {
-                                            try? await repository.addTokenToGallery(tokenId: token.id, galleryId: gid)
-                                            await reloadData()
-                                        }
-                                    },
-                                    onRemoveFromCurrentGallery: {
-                                        if case .customGallery(let gid) = selectedSidebarItem {
-                                            Task {
-                                                try? await repository.removeTokenFromGallery(tokenId: token.id, galleryId: gid)
-                                                await reloadData()
-                                            }
-                                        }
-                                    }
-                                )
-                            }
-                        }
-                        .padding(16)
-                    }
-                }
-                .searchable(text: $searchText, prompt: "Search title, creator, or contract…")
+            // Main Content Area: Collections Browser OR Artwork Grid
+            if case .collections = selectedSidebarItem {
+                collectionsBrowserView
+            } else {
+                artworksGridView
             }
-            .navigationTitle(navigationTitleString)
         } detail: {
             // Inspector Pane
             if let token = selectedToken {
                 TokenInspectorView(
                     token: token,
+                    collectionName: resolvedName(for: token.contract),
                     isLiveOnDesktop: currentWallpaperTokenId == token.tokenId,
                     galleries: galleries,
+                    matteMode: $matteMode,
+                    customHex: $customHex,
                     onSetWallpaper: {
                         currentWallpaperTokenId = token.tokenId
                         onSetWallpaper(token)
@@ -469,26 +481,13 @@ public struct LibraryView: View {
                             try? await repository.addTokenToGallery(tokenId: token.id, galleryId: gid)
                             await reloadData()
                         }
+                    },
+                    onFilterByCollection: { contract in
+                        selectedSidebarItem = .collection(contract)
                     }
                 )
             } else {
-                VStack(spacing: 14) {
-                    Image(systemName: "photo.on.rectangle.angled")
-                        .font(.system(size: 44))
-                        .foregroundColor(.secondary.opacity(0.5))
-                    Text("Select an artwork to inspect details")
-                        .font(.headline)
-                        .foregroundColor(.secondary)
-                        .multilineTextAlignment(.center)
-                    Text("Right-click any artwork to set wallpaper or add to a desKTop gallery")
-                        .font(.caption)
-                        .foregroundColor(.secondary.opacity(0.7))
-                        .multilineTextAlignment(.center)
-                        .lineSpacing(3)
-                }
-                .padding(.horizontal, 28)
-                .padding(.vertical, 24)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                inspectorPlaceholderView
             }
         }
         .navigationSplitViewColumnWidth(min: 280, ideal: 320, max: 420)
@@ -507,7 +506,170 @@ public struct LibraryView: View {
         }
     }
 
-    // MARK: - Subviews
+    // MARK: - Subviews: Artworks Grid
+
+    private var artworksGridView: some View {
+        VStack(spacing: 0) {
+            // Breadcrumbs header if viewing a specific collection
+            if case .collection(let contract) = selectedSidebarItem {
+                HStack(spacing: 8) {
+                    Button(action: {
+                        selectedSidebarItem = .collections
+                    }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "chevron.left")
+                            Text("All Collections")
+                        }
+                        .font(.caption)
+                    }
+                    .buttonStyle(.link)
+
+                    Text("/")
+                        .foregroundColor(.secondary)
+                        .font(.caption)
+
+                    Text(resolvedName(for: contract))
+                        .font(.headline)
+                        .lineLimit(1)
+
+                    Spacer()
+
+                    Button("Open on objkt.com") {
+                        if let url = URL(string: "https://objkt.com/collections/\(contract)") {
+                            NSWorkspace.shared.open(url)
+                        }
+                    }
+                    .font(.caption)
+                    .buttonStyle(.link)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .background(Color.secondary.opacity(0.06))
+            }
+
+            // Secondary Filter Toolbar
+            filterToolbar
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .background(.ultraThinMaterial)
+
+            Divider()
+
+            // Main Art Grid
+            ScrollView {
+                if displayedTokens.isEmpty {
+                    emptyStateView
+                        .frame(maxWidth: .infinity, minHeight: 360)
+                } else {
+                    LazyVGrid(
+                        columns: [GridItem(.adaptive(minimum: gridSize, maximum: gridSize * 1.5), spacing: 14)],
+                        spacing: 14
+                    ) {
+                        ForEach(displayedTokens) { token in
+                            TokenCardView(
+                                token: token,
+                                collectionName: resolvedName(for: token.contract),
+                                isSelected: selectedToken?.id == token.id,
+                                isLiveOnDesktop: currentWallpaperTokenId == token.tokenId,
+                                galleries: galleries,
+                                onSelect: {
+                                    selectedToken = token
+                                },
+                                onSetAsWallpaper: {
+                                    currentWallpaperTokenId = token.tokenId
+                                    onSetWallpaper(token)
+                                },
+                                onAddToGallery: { gid in
+                                    Task {
+                                        try? await repository.addTokenToGallery(tokenId: token.id, galleryId: gid)
+                                        await reloadData()
+                                    }
+                                },
+                                onFilterByCollection: { contract in
+                                    selectedSidebarItem = .collection(contract)
+                                },
+                                onRemoveFromCurrentGallery: {
+                                    if case .customGallery(let gid) = selectedSidebarItem {
+                                        Task {
+                                            try? await repository.removeTokenFromGallery(tokenId: token.id, galleryId: gid)
+                                            await reloadData()
+                                        }
+                                    }
+                                }
+                            )
+                        }
+                    }
+                    .padding(16)
+                }
+            }
+            .searchable(text: $searchText, prompt: "Search title, creator, or collection…")
+        }
+        .navigationTitle(navigationTitleString)
+    }
+
+    // MARK: - Subviews: Dedicated Collections Browser
+
+    private var collectionsBrowserView: some View {
+        VStack(spacing: 0) {
+            // Collection search & header bar
+            HStack(spacing: 12) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundColor(.secondary)
+
+                TextField("Filter collections by name or contract address…", text: $collectionSearchText)
+                    .textFieldStyle(.plain)
+
+                if !collectionSearchText.isEmpty {
+                    Button(action: { collectionSearchText = "" }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                Spacer()
+
+                Text("\(filteredCollections.count) collections")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(.ultraThinMaterial)
+
+            Divider()
+
+            // Collections Grid
+            ScrollView {
+                let columns = [GridItem(.adaptive(minimum: 220, maximum: 280), spacing: 16)]
+                LazyVGrid(columns: columns, spacing: 16) {
+                    ForEach(filteredCollections) { col in
+                        CollectionCardView(
+                            item: col,
+                            previewTokens: tokens.filter { $0.contract.lowercased() == col.contract.lowercased() }.prefix(4),
+                            onSelect: {
+                                selectedSidebarItem = .collection(col.contract)
+                            }
+                        )
+                    }
+                }
+                .padding(16)
+            }
+        }
+        .navigationTitle("Collections (\(filteredCollections.count))")
+    }
+
+    private var filteredCollections: [CollectionContractItem] {
+        if collectionSearchText.isEmpty {
+            return uniqueCollections
+        }
+        return uniqueCollections.filter {
+            $0.displayName.localizedCaseInsensitiveContains(collectionSearchText) ||
+            $0.contract.localizedCaseInsensitiveContains(collectionSearchText)
+        }
+    }
+
+    // MARK: - Filter Toolbar
 
     private var filterToolbar: some View {
         HStack(spacing: 10) {
@@ -539,40 +701,27 @@ public struct LibraryView: View {
             }
             .menuStyle(.borderlessButton)
 
-            // Collection Dropdown Filter
-            Menu {
-                Button("All Collections") {
-                    selectedContractFilter = nil
-                }
-                Divider()
-                ForEach(uniqueCollections) { col in
-                    Button(action: {
-                        selectedContractFilter = col.contract
-                    }) {
-                        if selectedContractFilter == col.contract {
-                            Label("\(col.displayName) (\(col.count))", systemImage: "checkmark")
-                        } else {
-                            Text("\(col.displayName) (\(col.count))")
-                        }
-                    }
-                }
-            } label: {
+            // Active Collection Filter Chip (if any)
+            if let activeContract = selectedContractFilter {
                 HStack(spacing: 5) {
                     Image(systemName: "rectangle.stack")
                         .font(.caption)
-                    let title = selectedContractFilter.flatMap { c in uniqueCollections.first(where: { $0.contract == c })?.displayName } ?? "All Collections"
-                    Text(title)
-                        .fontWeight(.medium)
+                    Text(resolvedName(for: activeContract))
+                        .fontWeight(.semibold)
                         .lineLimit(1)
-                    Image(systemName: "chevron.down")
-                        .font(.caption2)
+                    Button(action: {
+                        selectedContractFilter = nil
+                    }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.caption2)
+                    }
+                    .buttonStyle(.plain)
                 }
                 .padding(.horizontal, 9)
                 .padding(.vertical, 5)
-                .background(Color.secondary.opacity(0.12))
+                .background(Color.accentColor.opacity(0.18))
                 .cornerRadius(6)
             }
-            .menuStyle(.borderlessButton)
 
             // Sort Menu
             Menu {
@@ -589,7 +738,7 @@ public struct LibraryView: View {
                 HStack(spacing: 5) {
                     Image(systemName: "arrow.up.arrow.down")
                         .font(.caption)
-                    Text(sortOption.rawValue)
+                    Text("Sort: \(sortOption.rawValue)")
                         .fontWeight(.medium)
                         .lineLimit(1)
                     Image(systemName: "chevron.down")
@@ -601,6 +750,24 @@ public struct LibraryView: View {
                 .cornerRadius(6)
             }
             .menuStyle(.borderlessButton)
+
+            // Ascending / Descending Toggle Button
+            Button(action: {
+                sortDirection = (sortDirection == .ascending) ? .descending : .ascending
+            }) {
+                HStack(spacing: 4) {
+                    Image(systemName: sortDirection.iconName)
+                        .font(.system(size: 11, weight: .bold))
+                    Text(sortDirection == .ascending ? "Asc" : "Desc")
+                        .font(.caption)
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(Color.secondary.opacity(0.12))
+                .cornerRadius(6)
+            }
+            .buttonStyle(.plain)
+            .help(sortDirection == .ascending ? "Sorted Ascending (Click for Descending)" : "Sorted Descending (Click for Ascending)")
 
             Spacer()
 
@@ -661,7 +828,7 @@ public struct LibraryView: View {
             return "No tokens match '\(searchText)'. Try adjusting your search query or filters."
         }
         if case .created = selectedSidebarItem {
-            return "No created artworks indexed yet. Sync your sources to query minted pieces from objkt."
+            return "No created artworks found for this wallet. Sync sources to fetch your minted pieces from objkt."
         }
         if case .customGallery = selectedSidebarItem {
             return "This desKTop Gallery is empty. Right-click any token in the gallery to add it here."
@@ -674,6 +841,7 @@ public struct LibraryView: View {
         case .allArt: return "All Art (\(displayedTokens.count))"
         case .owned: return "Owned Art (\(displayedTokens.count))"
         case .created: return "Created Art (\(displayedTokens.count))"
+        case .collections: return "Collections (\(filteredCollections.count))"
         case .customGallery(let gid):
             let name = galleries.first(where: { $0.id == gid })?.name ?? "Gallery"
             return "\(name) (\(displayedTokens.count))"
@@ -681,9 +849,29 @@ public struct LibraryView: View {
             let name = objktCurations.first(where: { $0.galleryId == cid })?.name ?? "Curation"
             return "\(name) (\(displayedTokens.count))"
         case .collection(let contract):
-            let displayName = collectionNames[contract] ?? collectionNames[contract.lowercased()] ?? defaultContractAlias(for: contract)
+            let displayName = resolvedName(for: contract)
             return "\(displayName) (\(displayedTokens.count))"
         }
+    }
+
+    private var inspectorPlaceholderView: some View {
+        VStack(spacing: 14) {
+            Image(systemName: "photo.on.rectangle.angled")
+                .font(.system(size: 44))
+                .foregroundColor(.secondary.opacity(0.5))
+            Text("Select an artwork to inspect details")
+                .font(.headline)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+            Text("Right-click any artwork to set wallpaper, filter by collection, or add to a desKTop gallery")
+                .font(.caption)
+                .foregroundColor(.secondary.opacity(0.7))
+                .multilineTextAlignment(.center)
+                .lineSpacing(3)
+        }
+        .padding(.horizontal, 28)
+        .padding(.vertical, 24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var newGallerySheet: some View {
@@ -765,7 +953,7 @@ public struct LibraryView: View {
         for source in sources {
             switch source.type {
             case .wallet(let address, _):
-                // 1. Fetch all owned tokens from TzKT
+                // 1. Fetch owned tokens from TzKT
                 if let owned = try? await tzkt.fetchAllTokens(for: address) {
                     let artTokens = filter.filter(owned).map { token -> UnifiedToken in
                         var t = token
@@ -778,8 +966,8 @@ public struct LibraryView: View {
                     try? await repository.upsertTokens(artTokens)
                 }
 
-                // 2. Fetch created art tokens from objkt GraphQL
-                if let created = try? await objkt.fetchCreatedTokens(creator: address, limit: 500) {
+                // 2. Fetch created art tokens from objkt GraphQL (paginated up to 1000)
+                if let created = try? await objkt.fetchCreatedTokens(creator: address, limit: 1000) {
                     let artCreated = filter.filter(created)
                     try? await repository.upsertTokens(artCreated)
                 }
@@ -788,7 +976,6 @@ public struct LibraryView: View {
                 if let curations = try? await objkt.fetchUserGalleries(curator: address) {
                     try? await repository.setObjktCurations(curations)
 
-                    // Also fetch tokens from each curation
                     for cur in curations {
                         if let cTokens = try? await objkt.fetchCurationTokens(slugOrId: cur.galleryId, limit: 100) {
                             let tagged = cTokens.map { t -> UnifiedToken in
@@ -843,16 +1030,106 @@ public struct LibraryView: View {
     }
 }
 
+// MARK: - Collection Card View (For Collections Browser)
+
+struct CollectionCardView: View {
+    let item: CollectionContractItem
+    let previewTokens: ArraySlice<UnifiedToken>
+    let onSelect: () -> Void
+
+    @State private var isHovered: Bool = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            // Preview Image Grid (up to 4 thumbnails)
+            ZStack {
+                Color.black.opacity(0.12)
+
+                if previewTokens.isEmpty {
+                    Image(systemName: "rectangle.stack")
+                        .font(.system(size: 32))
+                        .foregroundColor(.secondary.opacity(0.5))
+                } else if previewTokens.count == 1, let first = previewTokens.first {
+                    ArtworkThumbnailView(token: first, contentMode: .fill)
+                        .clipped()
+                } else {
+                    let gridTokens = Array(previewTokens.prefix(4))
+                    VStack(spacing: 2) {
+                        HStack(spacing: 2) {
+                            if gridTokens.indices.contains(0) {
+                                ArtworkThumbnailView(token: gridTokens[0], contentMode: .fill)
+                                    .clipped()
+                            }
+                            if gridTokens.indices.contains(1) {
+                                ArtworkThumbnailView(token: gridTokens[1], contentMode: .fill)
+                                    .clipped()
+                            }
+                        }
+                        HStack(spacing: 2) {
+                            if gridTokens.indices.contains(2) {
+                                ArtworkThumbnailView(token: gridTokens[2], contentMode: .fill)
+                                    .clipped()
+                            }
+                            if gridTokens.indices.contains(3) {
+                                ArtworkThumbnailView(token: gridTokens[3], contentMode: .fill)
+                                    .clipped()
+                            }
+                        }
+                    }
+                }
+            }
+            .frame(height: 140)
+            .clipped()
+            .cornerRadius(8)
+
+            // Collection Details
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.displayName)
+                    .font(.headline)
+                    .fontWeight(.semibold)
+                    .lineLimit(1)
+
+                HStack {
+                    Text("\(item.count) artworks")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+
+                    Spacer()
+
+                    Text(String(item.contract.prefix(6)) + "…" + String(item.contract.suffix(4)))
+                        .font(.caption2)
+                        .foregroundColor(.secondary.opacity(0.7))
+                }
+            }
+            .padding(.horizontal, 4)
+        }
+        .padding(10)
+        .background(isHovered ? Color.secondary.opacity(0.12) : Color.secondary.opacity(0.06))
+        .cornerRadius(10)
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(isHovered ? Color.accentColor.opacity(0.5) : Color.secondary.opacity(0.15), lineWidth: 1)
+        )
+        .onHover { isHovered = $0 }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            onSelect()
+        }
+    }
+}
+
 // MARK: - Artwork Card View
 
 struct TokenCardView: View {
     let token: UnifiedToken
+    let collectionName: String
     let isSelected: Bool
     let isLiveOnDesktop: Bool
     let galleries: [DesktopGallery]
     let onSelect: () -> Void
     let onSetAsWallpaper: () -> Void
     let onAddToGallery: (UUID) -> Void
+    let onFilterByCollection: (String) -> Void
     let onRemoveFromCurrentGallery: () -> Void
 
     @State private var isHovered: Bool = false
@@ -920,19 +1197,24 @@ struct TokenCardView: View {
             .clipped()
             .cornerRadius(8)
 
-            // Metadata info
+            // Metadata info & collection link
             VStack(alignment: .leading, spacing: 2) {
                 Text(token.name)
                     .font(.subheadline)
                     .fontWeight(.medium)
                     .lineLimit(1)
 
-                if !token.creators.isEmpty {
-                    Text(token.creators.joined(separator: ", "))
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
+                // Clickable collection pill
+                Button(action: {
+                    onFilterByCollection(token.contract)
+                }) {
+                    Text(collectionName)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(.accentColor)
                         .lineLimit(1)
                 }
+                .buttonStyle(.plain)
+                .help("Filter to all artworks from '\(collectionName)'")
             }
         }
         .padding(8)
@@ -952,6 +1234,14 @@ struct TokenCardView: View {
                 Label("Set as macOS Wallpaper", systemImage: "display")
             }
 
+            Button(action: {
+                onFilterByCollection(token.contract)
+            }) {
+                Label("Show All in '\(collectionName)'", systemImage: "rectangle.stack")
+            }
+
+            Divider()
+
             if !galleries.isEmpty {
                 Menu("Add to desKTop Gallery") {
                     ForEach(galleries) { g in
@@ -968,8 +1258,14 @@ struct TokenCardView: View {
 
             Divider()
 
-            Button("View on objkt.com") {
+            Button("View Token on objkt.com") {
                 if let url = URL(string: "https://objkt.com/tokens/\(token.contract)/\(token.tokenId)") {
+                    NSWorkspace.shared.open(url)
+                }
+            }
+
+            Button("View Collection on objkt.com") {
+                if let url = URL(string: "https://objkt.com/collections/\(token.contract)") {
                     NSWorkspace.shared.open(url)
                 }
             }
@@ -1115,18 +1411,22 @@ public struct ArtworkThumbnailView: View {
 
 struct TokenInspectorView: View {
     let token: UnifiedToken
+    let collectionName: String
     let isLiveOnDesktop: Bool
     let galleries: [DesktopGallery]
+    @Binding var matteMode: WallpaperMatteMode
+    @Binding var customHex: String
     let onSetWallpaper: () -> Void
     let onAddToGallery: (UUID) -> Void
+    let onFilterByCollection: (String) -> Void
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 // Large Preview
                 ArtworkThumbnailView(token: token, contentMode: .fit)
-                    .frame(maxWidth: .infinity, maxHeight: 280)
-                    .background(Color.black.opacity(0.12))
+                    .frame(maxWidth: .infinity, maxHeight: 260)
+                    .background(Color.black.opacity(0.15))
                     .cornerRadius(8)
 
                 // Title & Artists
@@ -1136,10 +1436,37 @@ struct TokenInspectorView: View {
                         .fontWeight(.bold)
 
                     if !token.creators.isEmpty {
-                        Text("Created by \(token.creators.joined(separator: ", "))")
+                        Text("by \(token.creators.joined(separator: ", "))")
                             .font(.subheadline)
                             .foregroundColor(.secondary)
                     }
+                }
+
+                // Interactive Collection Link
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Collection")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+
+                    Button(action: {
+                        onFilterByCollection(token.contract)
+                    }) {
+                        HStack(spacing: 5) {
+                            Image(systemName: "rectangle.stack.fill")
+                                .foregroundColor(.accentColor)
+                                .font(.caption)
+                            Text(collectionName)
+                                .font(.subheadline)
+                                .fontWeight(.semibold)
+                                .foregroundColor(.accentColor)
+                                .lineLimit(1)
+                            Image(systemName: "arrow.right.circle")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .help("Filter library to all artworks in '\(collectionName)'")
                 }
 
                 // Primary Set Desktop Action
@@ -1165,6 +1492,68 @@ struct TokenInspectorView: View {
                     .controlSize(.regular)
                 }
 
+                // Desktop Matte & Letterbox Background Selector
+                Divider()
+
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("Wallpaper Matte & Letterbox")
+                            .font(.headline)
+                        Spacer()
+                        Circle()
+                            .fill(Color(nsColor: ArtworkMatteEngine.resolveMatteColor(imageURL: nil, mode: matteMode, customHex: customHex)))
+                            .frame(width: 12, height: 12)
+                            .overlay(Circle().stroke(Color.secondary.opacity(0.3), lineWidth: 1))
+                    }
+
+                    Picker("Matte Style", selection: $matteMode) {
+                        ForEach(WallpaperMatteMode.allCases) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.menu)
+
+                    if matteMode == .custom {
+                        HStack {
+                            Text("Hex Color:")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            TextField("#000000", text: $customHex)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(width: 100)
+                        }
+                    } else if matteMode == .dynamicArtwork {
+                        Text("Auto-extracts dominant color from the artwork to blend letterbox borders.")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                // Direct Marketplace Links
+                Divider()
+
+                HStack(spacing: 8) {
+                    Button(action: {
+                        if let url = URL(string: "https://objkt.com/tokens/\(token.contract)/\(token.tokenId)") {
+                            NSWorkspace.shared.open(url)
+                        }
+                    }) {
+                        Label("Token on objkt", systemImage: "arrow.up.right.square")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.link)
+
+                    Button(action: {
+                        if let url = URL(string: "https://objkt.com/collections/\(token.contract)") {
+                            NSWorkspace.shared.open(url)
+                        }
+                    }) {
+                        Label("Collection on objkt", systemImage: "arrow.up.right.square")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.link)
+                }
+
                 if let desc = token.description, !desc.isEmpty {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Description")
@@ -1181,7 +1570,7 @@ struct TokenInspectorView: View {
                     Text("Token Details")
                         .font(.headline)
 
-                    DetailRow(label: "Contract", value: token.contract)
+                    DetailRow(label: "Collection Contract", value: token.contract)
                     DetailRow(label: "Token ID", value: token.tokenId)
                     DetailRow(label: "Format Category", value: token.mediaCategory.rawValue.capitalized)
                     if let supply = token.supply {

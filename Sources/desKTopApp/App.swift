@@ -181,11 +181,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             let screenID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID ?? CGMainDisplayID()
             let displayUUID = DisplayManager.persistentUUID(for: screenID)
 
+            // Resolve border / letterbox matte color based on artwork & user preference
+            let matteModeRaw = UserDefaults.standard.string(forKey: "wallpaperMatteMode") ?? WallpaperMatteMode.dynamicArtwork.rawValue
+            let matteMode = WallpaperMatteMode(rawValue: matteModeRaw) ?? .dynamicArtwork
+            let customHex = UserDefaults.standard.string(forKey: "wallpaperCustomHex")
+            let matteColor = ArtworkMatteEngine.resolveMatteColor(imageURL: fileURL, mode: matteMode, customHex: customHex)
+
             switch token.mediaCategory {
             case .animatedImage:
                 // Animate GIF live on desktop canvas behind desktop icons
                 let controller = canvasControllers[displayUUID] ?? DesktopCanvasWindowController(screen: screen, displayUUID: displayUUID)
                 canvasControllers[displayUUID] = controller
+                controller.setBackgroundColor(matteColor)
 
                 let imageView = NSImageView(frame: screen.frame)
                 imageView.imageScaling = viewModel.scaling == .fill ? .scaleAxesIndependently : .scaleProportionallyUpOrDown
@@ -205,6 +212,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 // Loop video seamlessly on desktop canvas
                 let controller = canvasControllers[displayUUID] ?? DesktopCanvasWindowController(screen: screen, displayUUID: displayUUID)
                 canvasControllers[displayUUID] = controller
+                controller.setBackgroundColor(matteColor)
 
                 let videoView = VideoWallpaperView(videoURL: fileURL)
                 controller.setCanvasContent(videoView)
@@ -217,6 +225,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 // Run generative WebGL/HTML engine on desktop canvas
                 let controller = canvasControllers[displayUUID] ?? DesktopCanvasWindowController(screen: screen, displayUUID: displayUUID)
                 canvasControllers[displayUUID] = controller
+                controller.setBackgroundColor(matteColor)
 
                 let webView = SandboxedArtWebView(frame: screen.frame)
                 if token.mediaCategory == .aleatory, let alea = token.aleatory, let code = alea.code {
@@ -245,7 +254,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                     imageURL: fileURL,
                     tokenId: token.tokenId,
                     for: screen,
-                    scaling: viewModel.scaling
+                    scaling: viewModel.scaling,
+                    matteColor: matteColor
                 )
                 self.viewModel.currentToken = token
                 self.viewModel.statusMessage = "Live on \(screen.localizedName)"

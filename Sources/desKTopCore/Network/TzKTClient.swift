@@ -71,8 +71,34 @@ public actor TzKTClient {
             }
 
             let pageTokens = balances.compactMap { balanceDict -> UnifiedToken? in
-                guard let tokenDict = balanceDict["token"] as? [String: Any] else { return nil }
-                return parseUnifiedToken(from: tokenDict)
+                guard let tokenDict = balanceDict["token"] as? [String: Any],
+                      let parsed = parseUnifiedToken(from: tokenDict) else { return nil }
+                var meta = parsed.rawMetadata ?? [:]
+                if let lastTime = balanceDict["lastTime"] as? String {
+                    meta["lastTime"] = lastTime
+                }
+                if let firstTime = balanceDict["firstTime"] as? String {
+                    meta["firstTime"] = firstTime
+                }
+                return UnifiedToken(
+                    contract: parsed.contract,
+                    tokenId: parsed.tokenId,
+                    name: parsed.name,
+                    description: parsed.description,
+                    creators: parsed.creators,
+                    mimeType: parsed.mimeType,
+                    artifactUri: parsed.artifactUri,
+                    displayUri: parsed.displayUri,
+                    thumbnailUri: parsed.thumbnailUri,
+                    formats: parsed.formats,
+                    attributes: parsed.attributes,
+                    supply: parsed.supply,
+                    decimals: parsed.decimals,
+                    aleatory: parsed.aleatory,
+                    rawMetadata: meta,
+                    isOwned: true,
+                    isCreated: parsed.isCreated
+                )
             }
 
             allTokens.append(contentsOf: pageTokens)

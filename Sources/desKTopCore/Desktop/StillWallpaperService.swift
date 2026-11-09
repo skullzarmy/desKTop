@@ -52,7 +52,8 @@ public final class StillWallpaperService: Sendable {
         imageURL: URL,
         tokenId: String,
         for screen: NSScreen,
-        scaling: WallpaperScaling = .fit
+        scaling: WallpaperScaling = .fit,
+        matteColor: NSColor? = nil
     ) throws -> URL {
         let targetURL = try prepareCacheBustedURL(sourceURL: imageURL, tokenId: tokenId)
 
@@ -62,12 +63,18 @@ public final class StillWallpaperService: Sendable {
         case .fit:
             options[.imageScaling] = NSImageScaling.scaleProportionallyUpOrDown.rawValue
             options[.allowClipping] = false
+            if let color = matteColor {
+                options[.fillColor] = color
+            }
         case .fill:
             options[.imageScaling] = NSImageScaling.scaleAxesIndependently.rawValue
             options[.allowClipping] = true
         case .center:
             options[.imageScaling] = NSImageScaling.scaleNone.rawValue
             options[.allowClipping] = false
+            if let color = matteColor {
+                options[.fillColor] = color
+            }
         }
 
         do {

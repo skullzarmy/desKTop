@@ -228,6 +228,7 @@ public struct SourceManagementSheet: View {
         let resolver = TezosDomainsResolver()
         let tzkt = TzKTClient()
         let filter = FungibleFilterEngine()
+        let objkt = ObjktClient()
 
         // 1. Check if domain
         if let domain = TezosDomain(trimmed) {
@@ -241,7 +242,21 @@ public struct SourceManagementSheet: View {
                             self.statusMessage = "Fetching tokens for \(domain.normalized) (\(count) loaded)..."
                         }
                     }
-                    let artTokens = filter.filter(tokens)
+                    let artTokens = filter.filter(tokens).map { token -> UnifiedToken in
+                        var t = token
+                        t.isOwned = true
+                        return t
+                    }
+
+                    // Fetch created tokens from objkt GraphQL
+                    self.statusMessage = "Fetching created tokens from objkt..."
+                    let created = (try? await objkt.fetchCreatedTokens(creator: address, limit: 1000)) ?? []
+                    let artCreated = filter.filter(created)
+
+                    // Fetch user curations from objkt
+                    if let curations = try? await objkt.fetchUserGalleries(curator: address) {
+                        try? await repository.setObjktCurations(curations)
+                    }
 
                     let source = WalletSource(
                         type: .wallet(address: address, domain: domain),
@@ -251,7 +266,7 @@ public struct SourceManagementSheet: View {
                     )
 
                     try await repository.addSource(source)
-                    try await repository.upsertTokens(artTokens)
+                    try await repository.upsertTokens(artTokens + artCreated)
 
                     inputString = ""
                     await loadSources()
@@ -279,7 +294,21 @@ public struct SourceManagementSheet: View {
                         self.statusMessage = "Fetching tokens for \(address.raw) (\(count) loaded)..."
                     }
                 }
-                let artTokens = filter.filter(tokens)
+                let artTokens = filter.filter(tokens).map { token -> UnifiedToken in
+                    var t = token
+                    t.isOwned = true
+                    return t
+                }
+
+                // Fetch created tokens from objkt GraphQL
+                self.statusMessage = "Fetching created tokens from objkt..."
+                let created = (try? await objkt.fetchCreatedTokens(creator: address, limit: 1000)) ?? []
+                let artCreated = filter.filter(created)
+
+                // Fetch user curations from objkt
+                if let curations = try? await objkt.fetchUserGalleries(curator: address) {
+                    try? await repository.setObjktCurations(curations)
+                }
 
                 let source = WalletSource.fromAddress(
                     address,
@@ -290,7 +319,7 @@ public struct SourceManagementSheet: View {
                 mutableSource.tokenCount = artTokens.count
 
                 try await repository.addSource(mutableSource)
-                try await repository.upsertTokens(artTokens)
+                try await repository.upsertTokens(artTokens + artCreated)
 
                 inputString = ""
                 await loadSources()

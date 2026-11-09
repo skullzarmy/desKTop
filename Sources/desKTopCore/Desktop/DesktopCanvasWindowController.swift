@@ -58,6 +58,11 @@ public final class DesktopCanvasWindowController: NSWindowController {
     }
 
     @MainActor
+    public func setBackgroundColor(_ color: NSColor) {
+        panel.backgroundColor = color
+    }
+
+    @MainActor
     public func present() {
         panel.orderBack(nil)
         panel.setIsVisible(true)

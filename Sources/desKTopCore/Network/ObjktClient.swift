@@ -86,61 +86,83 @@ public actor ObjktClient {
         }
     }
 
-    /// Fetches art tokens created / minted by a specific wallet from objkt GraphQL
-    public func fetchCreatedTokens(creator: TezosAddress, limit: Int = 500) async throws -> [UnifiedToken] {
-        let query = """
-        query GetCreatedTokens($creator: String!, $limit: Int!) {
-          token(
-            where: { creators: { creator_address: { _eq: $creator } } }
-            limit: $limit
-            order_by: { token_id: desc }
-          ) {
-            fa_contract
-            token_id
-            name
-            description
-            mime
-            artifact_uri
-            display_uri
-            thumbnail_uri
-            supply
-            decimals
-            creators {
-              holder {
-                address
-                alias
-              }
-            }
-            attributes {
-              attribute {
+    /// Fetches art tokens created / minted by a specific wallet from objkt GraphQL with pagination
+    public func fetchCreatedTokens(creator: TezosAddress, limit: Int = 1000) async throws -> [UnifiedToken] {
+        var allTokens: [UnifiedToken] = []
+        var offset = 0
+        let batchSize = 250
+
+        while offset < limit {
+            let query = """
+            query GetCreatedTokens($creator: String!, $limit: Int!, $offset: Int!) {
+              token(
+                where: { creators: { creator_address: { _eq: $creator } } }
+                limit: $limit
+                offset: $offset
+                order_by: { timestamp: desc }
+              ) {
+                fa_contract
+                token_id
                 name
-                value
+                description
+                mime
+                artifact_uri
+                display_uri
+                thumbnail_uri
+                supply
+                decimals
+                timestamp
+                fa {
+                  name
+                  short_name
+                }
+                creators {
+                  holder {
+                    address
+                    alias
+                  }
+                }
+                attributes {
+                  attribute {
+                    name
+                    value
+                  }
+                }
               }
             }
-          }
-        }
-        """
+            """
 
-        let payload: [String: Any] = [
-            "query": query,
-            "variables": [
-                "creator": creator.raw,
-                "limit": limit
+            let payload: [String: Any] = [
+                "query": query,
+                "variables": [
+                    "creator": creator.raw,
+                    "limit": batchSize,
+                    "offset": offset
+                ]
             ]
-        ]
 
-        let data = try await executeGraphQL(payload: payload)
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let dataDict = json["data"] as? [String: Any],
-              let tokens = dataDict["token"] as? [[String: Any]] else {
-            return []
+            let data = try await executeGraphQL(payload: payload)
+            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let dataDict = json["data"] as? [String: Any],
+                  let tokens = dataDict["token"] as? [[String: Any]] else {
+                break
+            }
+
+            let batch = tokens.compactMap { dict -> UnifiedToken? in
+                guard var token = parseObjktToken(from: dict) else { return nil }
+                token.isCreated = true
+                return token
+            }
+
+            allTokens.append(contentsOf: batch)
+
+            if tokens.count < batchSize {
+                break
+            }
+            offset += batchSize
         }
 
-        return tokens.compactMap { dict in
-            guard var token = parseObjktToken(from: dict) else { return nil }
-            token.isCreated = true
-            return token
-        }
+        return allTokens
     }
 
     /// Fetches tokens contained in an objkt.com curation / gallery
@@ -310,6 +332,16 @@ public actor ObjktClient {
             }
         }
 
+        var rawMeta: [String: String] = [:]
+        if let timestamp = dict["timestamp"] as? String {
+            rawMeta["timestamp"] = timestamp
+            rawMeta["lastTime"] = timestamp
+        }
+        if let fa = dict["fa"] as? [String: Any], let faName = (fa["name"] as? String) ?? (fa["short_name"] as? String) {
+            rawMeta["collectionName"] = faName
+            rawMeta["contractAlias"] = faName
+        }
+
         return UnifiedToken(
             contract: contract,
             tokenId: tokenId,
@@ -325,7 +357,7 @@ public actor ObjktClient {
             supply: supply,
             decimals: decimals,
             aleatory: nil,
-            rawMetadata: nil
+            rawMetadata: rawMeta.isEmpty ? nil : rawMeta
         )
     }
 }
