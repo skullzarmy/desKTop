@@ -1,11 +1,12 @@
 name: Build & Release
 
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
     inputs:
+      tag:
+        description: 'Release tag (e.g. v1.0.0)'
+        required: false
+        default: 'v1.0.0'
       prerelease:
         description: 'Mark as pre-release'
         required: false
@@ -27,9 +28,12 @@ jobs:
       - name: Extract Tag / Version
         id: version
         run: |
-          TAG="${GITHUB_REF#refs/tags/}"
-          if [ "$TAG" = "$GITHUB_REF" ]; then
-            TAG="v1.0.0-dev"
+          TAG="${{ inputs.tag }}"
+          if [ -z "$TAG" ]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
+          if [ "$TAG" = "$GITHUB_REF" ] || [ -z "$TAG" ]; then
+            TAG="v1.0.0"
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Building release for tag $TAG"
@@ -126,7 +130,7 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
+          tag_name: ${{ inputs.tag || github.ref_name }}
           name: "desKTop"
           draft: false
           prerelease: ${{ inputs.prerelease || false }}
