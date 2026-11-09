@@ -65,6 +65,11 @@ await runSuite(name: "GenerativeRuntimeTests") {
     try GenerativeRuntimeTests.run()
 }
 
+// Phase 5 & 6 Tests
+await runSuite(name: "RotationAndEnergyTests") {
+    try RotationAndEnergyTests.run()
+}
+
 print("\n==========================================")
 print("Results: \(totalPassed) passed, \(totalFailed) failed.")
 print("==========================================")
