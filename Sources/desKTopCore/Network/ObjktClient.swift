@@ -1,5 +1,32 @@
 import Foundation
 
+/// Summary of an objkt.com user curation / gallery
+public struct ObjktGallerySummary: Identifiable, Hashable, Codable, Sendable {
+    public var id: String { galleryId }
+    public let galleryId: String
+    public let slug: String
+    public let name: String
+    public let description: String?
+    public let logoUri: String?
+    public let itemsCount: Int
+
+    public init(
+        galleryId: String,
+        slug: String,
+        name: String,
+        description: String? = nil,
+        logoUri: String? = nil,
+        itemsCount: Int = 0
+    ) {
+        self.galleryId = galleryId
+        self.slug = slug
+        self.name = name
+        self.description = description
+        self.logoUri = logoUri
+        self.itemsCount = itemsCount
+    }
+}
+
 /// Client for objkt.com GraphQL v3 API
 public actor ObjktClient {
     public static let defaultEndpoint = URL(string: "https://data.objkt.com/v3/graphql")!
@@ -10,6 +37,110 @@ public actor ObjktClient {
     public init(session: URLSession = .shared, endpoint: URL = defaultEndpoint) {
         self.session = session
         self.endpoint = endpoint
+    }
+
+    /// Fetches all curations / galleries curated by a specific wallet address from objkt GraphQL
+    public func fetchUserGalleries(curator: TezosAddress) async throws -> [ObjktGallerySummary] {
+        let query = """
+        query GetUserGalleries($curator: String!) {
+          gallery(where: { curators: { curator_address: { _eq: $curator } } }, order_by: { items: desc }) {
+            gallery_id
+            slug
+            name
+            description
+            logo
+            items
+          }
+        }
+        """
+
+        let payload: [String: Any] = [
+            "query": query,
+            "variables": ["curator": curator.raw]
+        ]
+
+        let data = try await executeGraphQL(payload: payload)
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let dataDict = json["data"] as? [String: Any],
+              let galleries = dataDict["gallery"] as? [[String: Any]] else {
+            return []
+        }
+
+        return galleries.compactMap { dict in
+            guard let gid = dict["gallery_id"] as? String ?? (dict["gallery_id"] as? NSNumber)?.stringValue,
+                  let name = dict["name"] as? String else { return nil }
+
+            let slug = (dict["slug"] as? String) ?? gid
+            let desc = dict["description"] as? String
+            let logo = dict["logo"] as? String
+            let items = (dict["items"] as? NSNumber)?.intValue ?? 0
+
+            return ObjktGallerySummary(
+                galleryId: gid,
+                slug: slug,
+                name: name,
+                description: desc,
+                logoUri: logo,
+                itemsCount: items
+            )
+        }
+    }
+
+    /// Fetches art tokens created / minted by a specific wallet from objkt GraphQL
+    public func fetchCreatedTokens(creator: TezosAddress, limit: Int = 500) async throws -> [UnifiedToken] {
+        let query = """
+        query GetCreatedTokens($creator: String!, $limit: Int!) {
+          token(
+            where: { creators: { creator_address: { _eq: $creator } } }
+            limit: $limit
+            order_by: { token_id: desc }
+          ) {
+            fa_contract
+            token_id
+            name
+            description
+            mime
+            artifact_uri
+            display_uri
+            thumbnail_uri
+            supply
+            decimals
+            creators {
+              holder {
+                address
+                alias
+              }
+            }
+            attributes {
+              attribute {
+                name
+                value
+              }
+            }
+          }
+        }
+        """
+
+        let payload: [String: Any] = [
+            "query": query,
+            "variables": [
+                "creator": creator.raw,
+                "limit": limit
+            ]
+        ]
+
+        let data = try await executeGraphQL(payload: payload)
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let dataDict = json["data"] as? [String: Any],
+              let tokens = dataDict["token"] as? [[String: Any]] else {
+            return []
+        }
+
+        return tokens.compactMap { dict in
+            guard var token = parseObjktToken(from: dict) else { return nil }
+            token.isCreated = true
+            return token
+        }
     }
 
     /// Fetches tokens contained in an objkt.com curation / gallery

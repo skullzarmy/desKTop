@@ -97,6 +97,8 @@ public struct UnifiedToken: Identifiable, Hashable, Codable, Sendable {
     public let decimals: Int?
     public let aleatory: AleatoryMetadata?
     public let rawMetadata: [String: String]?
+    public var isOwned: Bool
+    public var isCreated: Bool
 
     public init(
         contract: String,
@@ -113,7 +115,9 @@ public struct UnifiedToken: Identifiable, Hashable, Codable, Sendable {
         supply: Int? = nil,
         decimals: Int? = nil,
         aleatory: AleatoryMetadata? = nil,
-        rawMetadata: [String: String]? = nil
+        rawMetadata: [String: String]? = nil,
+        isOwned: Bool = true,
+        isCreated: Bool = false
     ) {
         self.contract = contract
         self.tokenId = tokenId
@@ -130,6 +134,8 @@ public struct UnifiedToken: Identifiable, Hashable, Codable, Sendable {
         self.decimals = decimals
         self.aleatory = aleatory
         self.rawMetadata = rawMetadata
+        self.isOwned = isOwned
+        self.isCreated = isCreated
     }
 
     /// Primary URI to render as wallpaper (displayUri preferred for audio/3D, artifactUri preferred for visuals)

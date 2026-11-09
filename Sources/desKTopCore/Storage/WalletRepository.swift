@@ -6,21 +6,27 @@ public struct RepositoryState: Codable, Sendable {
     public var whitelistedIds: Set<String>
     public var blacklistedIds: Set<String>
     public var tokens: [UnifiedToken]
+    public var galleries: [DesktopGallery]
+    public var objktCurations: [ObjktGallerySummary]
 
     public init(
         sources: [WalletSource] = [],
         whitelistedIds: Set<String> = [],
         blacklistedIds: Set<String> = [],
-        tokens: [UnifiedToken] = []
+        tokens: [UnifiedToken] = [],
+        galleries: [DesktopGallery] = [],
+        objktCurations: [ObjktGallerySummary] = []
     ) {
         self.sources = sources
         self.whitelistedIds = whitelistedIds
         self.blacklistedIds = blacklistedIds
         self.tokens = tokens
+        self.galleries = galleries
+        self.objktCurations = objktCurations
     }
 }
 
-/// Actor managing local file-based persistence for user sources, preferences, and token index
+/// Actor managing local file-based persistence for user sources, preferences, custom galleries, and token index
 public actor WalletRepository {
     private let storageURL: URL
     private var state: RepositoryState
@@ -53,11 +59,12 @@ public actor WalletRepository {
     }
 
     public func addSource(_ source: WalletSource) async throws {
-        // Prevent duplicate addresses / curations
-        if !state.sources.contains(where: { $0.id == source.id || $0.displayName == source.displayName }) {
+        if let idx = state.sources.firstIndex(where: { $0.id == source.id || $0.displayName == source.displayName }) {
+            state.sources[idx] = source
+        } else {
             state.sources.append(source)
-            try persist()
         }
+        try persist()
     }
 
     public func updateSource(_ source: WalletSource) async throws {
@@ -106,7 +113,14 @@ public actor WalletRepository {
             tokenMap[existing.id] = existing
         }
         for token in newTokens {
-            tokenMap[token.id] = token
+            if let existing = tokenMap[token.id] {
+                var updated = token
+                updated.isOwned = existing.isOwned || token.isOwned
+                updated.isCreated = existing.isCreated || token.isCreated
+                tokenMap[token.id] = updated
+            } else {
+                tokenMap[token.id] = token
+            }
         }
         state.tokens = Array(tokenMap.values)
         try persist()
@@ -114,6 +128,82 @@ public actor WalletRepository {
 
     public func clearTokens() async throws {
         state.tokens.removeAll()
+        try persist()
+    }
+
+    // MARK: - desKTop Galleries
+
+    public func getGalleries() -> [DesktopGallery] {
+        return state.galleries
+    }
+
+    public func createGallery(name: String, description: String? = nil) async throws -> DesktopGallery {
+        let gallery = DesktopGallery(name: name, description: description)
+        state.galleries.append(gallery)
+        try persist()
+        return gallery
+    }
+
+    public func updateGallery(_ gallery: DesktopGallery) async throws {
+        if let idx = state.galleries.firstIndex(where: { $0.id == gallery.id }) {
+            var g = gallery
+            g.updatedAt = Date()
+            state.galleries[idx] = g
+            try persist()
+        }
+    }
+
+    public func deleteGallery(id: UUID) async throws {
+        state.galleries.removeAll(where: { $0.id == id })
+        try persist()
+    }
+
+    public func setActiveGallery(id: UUID?) async throws {
+        for i in 0..<state.galleries.count {
+            state.galleries[i].isActiveForRotation = (state.galleries[i].id == id)
+        }
+        try persist()
+    }
+
+    public func addTokenToGallery(tokenId: String, galleryId: UUID) async throws {
+        if let idx = state.galleries.firstIndex(where: { $0.id == galleryId }) {
+            if !state.galleries[idx].tokenIds.contains(tokenId) {
+                state.galleries[idx].tokenIds.append(tokenId)
+                state.galleries[idx].updatedAt = Date()
+                try persist()
+            }
+        }
+    }
+
+    public func removeTokenFromGallery(tokenId: String, galleryId: UUID) async throws {
+        if let idx = state.galleries.firstIndex(where: { $0.id == galleryId }) {
+            state.galleries[idx].tokenIds.removeAll(where: { $0 == tokenId })
+            state.galleries[idx].updatedAt = Date()
+            try persist()
+        }
+    }
+
+    /// Tokens to use for wallpaper rotation: if a custom gallery is set active, use its tokens; otherwise all tokens
+    public func getActiveRotationTokens() -> [UnifiedToken] {
+        if let activeGallery = state.galleries.first(where: { $0.isActiveForRotation }),
+           !activeGallery.tokenIds.isEmpty {
+            let activeSet = Set(activeGallery.tokenIds)
+            let matched = state.tokens.filter { activeSet.contains($0.id) }
+            if !matched.isEmpty {
+                return matched
+            }
+        }
+        return state.tokens
+    }
+
+    // MARK: - objkt Curations Cache
+
+    public func getObjktCurations() -> [ObjktGallerySummary] {
+        return state.objktCurations
+    }
+
+    public func setObjktCurations(_ curations: [ObjktGallerySummary]) async throws {
+        state.objktCurations = curations
         try persist()
     }
 

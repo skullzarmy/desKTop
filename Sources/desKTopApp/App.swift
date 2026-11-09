@@ -42,6 +42,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private let repository = WalletRepository()
     private let wallpaperService = StillWallpaperService()
     private let vault = MediaVault()
+    private var canvasControllers: [String: DesktopCanvasWindowController] = [:]
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Strictly start with .accessory policy: zero presence in Dock or Cmd+Tab
@@ -148,7 +149,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     @objc private func showAboutDialog() {
         let alert = NSAlert()
         alert.messageText = "desKTop"
-        alert.informativeText = "Version 1.0.0\n\nA clean-room native macOS desktop wallpaper manager for Tezos art NFTs.\n\nCreated by FAFOlab (a FAFOlab joint)\nhttps://fafolab.xyz\n\nReleased under The Unlicense."
+        alert.informativeText = "Version 1.0.0\n\nTurn your Mac desktop into a living Tezos art gallery.\n\nCreated by FAFOlab (a FAFOlab joint)\nhttps://fafolab.xyz\n\nOpen source under The Unlicense."
         alert.alertStyle = .informational
         if let icon = NSApp.applicationIconImage {
             alert.icon = icon
@@ -173,30 +174,89 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             return
         }
 
-        viewModel.statusMessage = "Rendering \(token.name)..."
+        viewModel.statusMessage = "Loading \(token.name)..."
         do {
             let (fileURL, _) = try await vault.getOrFetchMedia(for: uri)
-            if let screen = NSScreen.main {
-                do {
-                    _ = try wallpaperService.setDesktopWallpaper(
-                        imageURL: fileURL,
-                        tokenId: token.tokenId,
-                        for: screen,
-                        scaling: viewModel.scaling
-                    )
-                    self.viewModel.currentToken = token
-                    self.viewModel.statusMessage = "Live on \(screen.localizedName)"
-                } catch {
-                    self.viewModel.statusMessage = "Error: \(error.localizedDescription)"
+            guard let screen = NSScreen.main else { return }
+            let screenID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID ?? CGMainDisplayID()
+            let displayUUID = DisplayManager.persistentUUID(for: screenID)
+
+            switch token.mediaCategory {
+            case .animatedImage:
+                // Animate GIF live on desktop canvas behind desktop icons
+                let controller = canvasControllers[displayUUID] ?? DesktopCanvasWindowController(screen: screen, displayUUID: displayUUID)
+                canvasControllers[displayUUID] = controller
+
+                let imageView = NSImageView(frame: screen.frame)
+                imageView.imageScaling = viewModel.scaling == .fill ? .scaleAxesIndependently : .scaleProportionallyUpOrDown
+                imageView.animates = true
+                imageView.canDrawSubviewsIntoLayer = true
+                if let data = try? Data(contentsOf: fileURL), let img = NSImage(data: data) {
+                    imageView.image = img
+                    imageView.animates = true
                 }
+                controller.setCanvasContent(imageView)
+                controller.present()
+
+                self.viewModel.currentToken = token
+                self.viewModel.statusMessage = "Live on \(screen.localizedName) (Animated GIF)"
+
+            case .video:
+                // Loop video seamlessly on desktop canvas
+                let controller = canvasControllers[displayUUID] ?? DesktopCanvasWindowController(screen: screen, displayUUID: displayUUID)
+                canvasControllers[displayUUID] = controller
+
+                let videoView = VideoWallpaperView(videoURL: fileURL)
+                controller.setCanvasContent(videoView)
+                controller.present()
+
+                self.viewModel.currentToken = token
+                self.viewModel.statusMessage = "Live on \(screen.localizedName) (Video Loop)"
+
+            case .fxhash, .aleatory, .bootloader, .editArt, .interactiveHtml:
+                // Run generative WebGL/HTML engine on desktop canvas
+                let controller = canvasControllers[displayUUID] ?? DesktopCanvasWindowController(screen: screen, displayUUID: displayUUID)
+                canvasControllers[displayUUID] = controller
+
+                let webView = SandboxedArtWebView(frame: screen.frame)
+                if token.mediaCategory == .aleatory, let alea = token.aleatory, let code = alea.code {
+                    let decompressed = (try? AleatoryRuntime.decompress(code: code, encoding: alea.encoding)) ?? code
+                    let harness = AleatoryRuntime.composeHTMLHarness(decompressedScript: decompressed, seed: alea.seed ?? "0")
+                    webView.loadHTML(harness)
+                } else if token.mediaCategory == .bootloader, let desc = token.description {
+                    let html = BootloaderRuntime.composeHTMLDocument(script: desc, seed: "0")
+                    webView.loadHTML(html)
+                } else {
+                    webView.webView.load(URLRequest(url: fileURL))
+                }
+                controller.setCanvasContent(webView)
+                controller.present()
+
+                self.viewModel.currentToken = token
+                self.viewModel.statusMessage = "Live on \(screen.localizedName) (Generative)"
+
+            default:
+                // Still wallpaper: dismiss dynamic canvas and set image via NSWorkspace
+                if let controller = canvasControllers[displayUUID] {
+                    controller.dismiss()
+                }
+
+                _ = try wallpaperService.setDesktopWallpaper(
+                    imageURL: fileURL,
+                    tokenId: token.tokenId,
+                    for: screen,
+                    scaling: viewModel.scaling
+                )
+                self.viewModel.currentToken = token
+                self.viewModel.statusMessage = "Live on \(screen.localizedName)"
             }
         } catch {
-            self.viewModel.statusMessage = "Download failed: \(error.localizedDescription)"
+            self.viewModel.statusMessage = "Error: \(error.localizedDescription)"
         }
     }
 
     private func rotateNext() async {
-        let tokens = await repository.getTokens()
+        let tokens = await repository.getActiveRotationTokens()
         guard !tokens.isEmpty else { return }
 
         if let current = viewModel.currentToken,
@@ -209,7 +269,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     private func rotatePrevious() async {
-        let tokens = await repository.getTokens()
+        let tokens = await repository.getActiveRotationTokens()
         guard !tokens.isEmpty else { return }
 
         if let current = viewModel.currentToken,
