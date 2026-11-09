@@ -406,23 +406,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if popover.isShown {
             popover.performClose(nil)
         }
-        NSApp.setActivationPolicy(.regular)
-        NSApp.activate(ignoringOtherApps: true)
+        SettingsWindowController.shared.show(repository: repository)
+    }
 
-        let showSettings = Selector(("showSettingsWindow:"))
-        let showPrefs = Selector(("showPreferencesWindow:"))
+    @objc func showSettingsWindow(_ sender: Any?) {
+        openSettingsWindow()
+    }
 
-        if !NSApp.sendAction(showSettings, to: nil, from: nil) {
-            _ = NSApp.sendAction(showPrefs, to: nil, from: nil)
-        }
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-            if let window = NSApp.windows.first(where: {
-                $0.canBecomeKey && ($0.title.contains("Settings") || $0.title.contains("Preferences") || $0.identifier?.rawValue.contains("Settings") == true)
-            }) {
-                window.makeKeyAndOrderFront(nil)
-            }
-        }
+    @objc func showPreferencesWindow(_ sender: Any?) {
+        openSettingsWindow()
     }
 
     @objc private func checkForUpdatesMenuClicked() {
@@ -505,12 +497,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             let customHex = UserDefaults.standard.string(forKey: "wallpaperCustomHex")
             let matteColor = ArtworkMatteEngine.resolveMatteColor(imageURL: fileURL, mode: matteMode, customHex: customHex)
 
+            // Detect if media is animated GIF from file header even if indexer metadata was generic
+            var effectiveCategory = token.mediaCategory
+            if effectiveCategory == .staticImage || effectiveCategory == .unknown {
+                if let fileHandle = try? FileHandle(forReadingFrom: fileURL) {
+                    let prefixData = fileHandle.readData(ofLength: 32)
+                    try? fileHandle.close()
+                    if MediaTypeDetector.detect(data: prefixData) == .gif {
+                        effectiveCategory = .animatedImage
+                    }
+                }
+            }
+
             // Energy & Motion tuning check:
             let disableAnimations = UserDefaults.standard.bool(forKey: "disableAnimations")
             let pauseOnBattery = UserDefaults.standard.bool(forKey: "pauseOnBattery")
             let shouldFreeze = disableAnimations || (pauseOnBattery && PowerGuardian.shared.isOnBattery) || PowerGuardian.shared.isLowPowerModeEnabled
 
-            if shouldFreeze && (token.mediaCategory == .animatedImage || token.mediaCategory == .video || token.mediaCategory == .fxhash || token.mediaCategory == .aleatory || token.mediaCategory == .bootloader || token.mediaCategory == .editArt || token.mediaCategory == .interactiveHtml) {
+            if shouldFreeze && (effectiveCategory == .animatedImage || effectiveCategory == .video || effectiveCategory == .fxhash || effectiveCategory == .aleatory || effectiveCategory == .bootloader || effectiveCategory == .editArt || effectiveCategory == .interactiveHtml) {
                 if let controller = canvasControllers[displayUUID] {
                     controller.dismiss()
                 }
@@ -531,16 +535,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 return
             }
 
-            switch token.mediaCategory {
+            switch effectiveCategory {
             case .animatedImage:
                 // Hardware-accelerated WebKit canvas for animated GIFs / WebP: 0% runaway CPU
                 let controller = canvasControllers[displayUUID] ?? DesktopCanvasWindowController(screen: screen, displayUUID: displayUUID)
                 canvasControllers[displayUUID] = controller
                 controller.setBackgroundColor(matteColor)
 
-                let webView = SandboxedArtWebView(tokenDirectory: fileURL.deletingLastPathComponent(), frame: screen.frame)
+                let tokenDir = fileURL.deletingLastPathComponent()
+                let webView = SandboxedArtWebView(tokenDirectory: tokenDir, frame: screen.frame)
                 let objectFit = (viewModel.scaling == .fill) ? "cover" : (viewModel.scaling == .center ? "none" : "contain")
                 let bgHex = matteColor.hexString
+                let fileName = fileURL.lastPathComponent
+                let encodedFileName = fileName.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? fileName
                 let html = """
                 <!DOCTYPE html>
                 <html>
@@ -553,11 +560,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 </style>
                 </head>
                 <body>
-                <img src="art://isolated/\(fileURL.lastPathComponent)" />
+                <img src="desktop-art://isolated/\(encodedFileName)" />
                 </body>
                 </html>
                 """
-                webView.loadHTML(html)
+                webView.loadHTML(html, baseURL: URL(string: "desktop-art://isolated/"))
                 controller.setCanvasContent(webView)
                 controller.present()
 

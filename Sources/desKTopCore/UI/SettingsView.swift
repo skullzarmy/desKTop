@@ -4,7 +4,7 @@ import AppKit
 
 public struct SettingsView: View {
     @AppStorage("disableAnimations") private var disableAnimations: Bool = false
-    @AppStorage("pauseOnBattery") private var pauseOnBattery: Bool = true
+    @AppStorage("pauseOnBattery") private var pauseOnBattery: Bool = false
     @AppStorage("muteVideoAudio") private var muteVideoAudio: Bool = true
     @AppStorage("wallpaperScaling") private var wallpaperScalingRaw: String = WallpaperScaling.fit.rawValue
     @AppStorage("wallpaperMatteMode") private var wallpaperMatteModeRaw: String = WallpaperMatteMode.dynamicArtwork.rawValue

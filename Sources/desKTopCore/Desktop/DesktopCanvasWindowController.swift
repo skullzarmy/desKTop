@@ -29,7 +29,8 @@ public final class DesktopCanvasWindowController: NSWindowController {
 
     @MainActor
     private func setupPanelProperties(screen: NSScreen) {
-        panel.level = NSWindow.Level(Int(CGWindowLevelForKey(.desktopWindow)))
+        // Position directly above desktop wallpaper level (-2147483623) and safely below desktop icons (-2147483603)
+        panel.level = NSWindow.Level(Int(CGWindowLevelForKey(.desktopWindow)) + 1)
         panel.sharingType = .none
         panel.hasShadow = false
         panel.isOpaque = true
@@ -47,7 +48,6 @@ public final class DesktopCanvasWindowController: NSWindowController {
         ]
 
         panel.setFrame(screen.frame, display: true)
-        panel.orderBack(nil)
     }
 
     @MainActor
@@ -64,7 +64,7 @@ public final class DesktopCanvasWindowController: NSWindowController {
 
     @MainActor
     public func present() {
-        panel.orderBack(nil)
+        panel.orderFront(nil)
         panel.setIsVisible(true)
     }
 

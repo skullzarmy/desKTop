@@ -24,17 +24,31 @@ public final class IsolatedArtSchemeHandler: NSObject, WKURLSchemeHandler {
             return
         }
 
+        var cleanPath = url.path
+        if cleanPath.hasPrefix("/") {
+            cleanPath = String(cleanPath.dropFirst())
+        }
+        if cleanPath.hasPrefix("isolated/") {
+            cleanPath = String(cleanPath.dropFirst("isolated/".count))
+        }
+        if cleanPath.hasPrefix("/") {
+            cleanPath = String(cleanPath.dropFirst())
+        }
+
+        if let decoded = cleanPath.removingPercentEncoding {
+            cleanPath = decoded
+        }
+
         // Relative path validation - reject path traversal
-        let path = url.path
-        if path.contains("..") {
+        if cleanPath.contains("..") {
             urlSchemeTask.didFailWithError(SandboxedWebError.pathTraversalDetected)
             return
         }
 
-        let cleanPath = path.hasPrefix("/") ? String(path.dropFirst()) : path
-        let targetFile = rootDirectory.appendingPathComponent(cleanPath)
+        let canonicalRoot = rootDirectory.standardizedFileURL
+        let targetFile = canonicalRoot.appendingPathComponent(cleanPath).standardizedFileURL
 
-        guard targetFile.path.hasPrefix(rootDirectory.path),
+        guard targetFile.path.hasPrefix(canonicalRoot.path),
               let data = try? Data(contentsOf: targetFile) else {
             let notFound = HTTPURLResponse(url: url, statusCode: 404, httpVersion: "HTTP/1.1", headerFields: nil)!
             urlSchemeTask.didReceive(notFound)
@@ -101,6 +115,7 @@ public final class SandboxedArtWebView: NSView {
         if let dir = tokenDirectory {
             let handler = IsolatedArtSchemeHandler(rootDirectory: dir)
             config.setURLSchemeHandler(handler, forURLScheme: "desktop-art")
+            config.setURLSchemeHandler(handler, forURLScheme: "art")
         }
 
         self.webView = WKWebView(frame: frame, configuration: config)
