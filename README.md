@@ -26,7 +26,7 @@ Download the latest release build for macOS (Universal: Apple Silicon & Intel):
 
 Open the `.dmg` and drag `desKTop.app` to your `/Applications` folder.
 
-**Target Platform**: Built for macOS Tahoe (16.0+) • Universal (Apple Silicon & Intel).
+**Target Platform**: Built for the latest versions of macOS • Universal (Apple Silicon & Intel).
 
 ---
 
@@ -34,7 +34,7 @@ Open the `.dmg` and drag `desKTop.app` to your `/Applications` folder.
 
 desKTop is free and unencumbered software released into the public domain under [The Unlicense](LICENSE) with zero tracking, zero telemetry, and zero fees.
 
-Because we do not pay Apple $99/year for Apple Developer ID notarization, macOS Tahoe will ask for your confirmation the first time you run it.
+Because we do not pay Apple $99/year for Apple Developer ID notarization, the latest versions of macOS will ask for your confirmation the first time you run it.
 
 #### Option A: Three-Click Permission
 
