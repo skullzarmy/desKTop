@@ -2,8 +2,10 @@ import AppKit
 import Foundation
 
 public enum RotationInterval: Int, CaseIterable, Identifiable, Codable, Sendable {
+    case oneMinute = 60
     case fiveMinutes = 300
     case fifteenMinutes = 900
+    case thirtyMinutes = 1800
     case oneHour = 3600
     case sixHours = 21600
     case daily = 86400
@@ -13,8 +15,10 @@ public enum RotationInterval: Int, CaseIterable, Identifiable, Codable, Sendable
 
     public var displayName: String {
         switch self {
+        case .oneMinute: return "Every 1 Minute"
         case .fiveMinutes: return "Every 5 Minutes"
         case .fifteenMinutes: return "Every 15 Minutes"
+        case .thirtyMinutes: return "Every 30 Minutes"
         case .oneHour: return "Every Hour"
         case .sixHours: return "Every 6 Hours"
         case .daily: return "Daily"

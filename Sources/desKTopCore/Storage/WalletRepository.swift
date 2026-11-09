@@ -1,5 +1,40 @@
 import Foundation
 
+public enum ActiveRotationTarget: Codable, Hashable, Sendable {
+    case allArt
+    case owned
+    case created
+    case collection(contract: String, displayName: String)
+    case customGallery(id: UUID, name: String)
+    case objktCuration(id: String, name: String)
+
+    public var displayName: String {
+        switch self {
+        case .allArt: return "All Art"
+        case .owned: return "Owned Art"
+        case .created: return "Created Art"
+        case .collection(_, let name): return name
+        case .customGallery(_, let name): return name
+        case .objktCuration(_, let name): return name
+        }
+    }
+
+    public var isCollection: Bool {
+        if case .collection = self { return true }
+        return false
+    }
+
+    public var collectionContract: String? {
+        if case .collection(let c, _) = self { return c }
+        return nil
+    }
+}
+
+extension Notification.Name {
+    public static let didChangeActiveRotation = Notification.Name("desKTop.didChangeActiveRotation")
+    public static let didRequestNextWallpaper = Notification.Name("desKTop.didRequestNextWallpaper")
+}
+
 /// Repository data state container
 public struct RepositoryState: Codable, Sendable {
     public var sources: [WalletSource]
@@ -8,6 +43,10 @@ public struct RepositoryState: Codable, Sendable {
     public var tokens: [UnifiedToken]
     public var galleries: [DesktopGallery]
     public var objktCurations: [ObjktGallerySummary]
+    public var activeRotationTarget: ActiveRotationTarget?
+    public var isRotationPaused: Bool
+    public var isRotationShuffle: Bool
+    public var rotationIntervalSeconds: Int
 
     public init(
         sources: [WalletSource] = [],
@@ -15,7 +54,11 @@ public struct RepositoryState: Codable, Sendable {
         blacklistedIds: Set<String> = [],
         tokens: [UnifiedToken] = [],
         galleries: [DesktopGallery] = [],
-        objktCurations: [ObjktGallerySummary] = []
+        objktCurations: [ObjktGallerySummary] = [],
+        activeRotationTarget: ActiveRotationTarget? = .allArt,
+        isRotationPaused: Bool = false,
+        isRotationShuffle: Bool = true,
+        rotationIntervalSeconds: Int = 300
     ) {
         self.sources = sources
         self.whitelistedIds = whitelistedIds
@@ -23,10 +66,15 @@ public struct RepositoryState: Codable, Sendable {
         self.tokens = tokens
         self.galleries = galleries
         self.objktCurations = objktCurations
+        self.activeRotationTarget = activeRotationTarget
+        self.isRotationPaused = isRotationPaused
+        self.isRotationShuffle = isRotationShuffle
+        self.rotationIntervalSeconds = rotationIntervalSeconds
     }
 
     enum CodingKeys: String, CodingKey {
-        case sources, whitelistedIds, blacklistedIds, tokens, galleries, objktCurations
+        case sources, whitelistedIds, blacklistedIds, tokens, galleries, objktCurations,
+             activeRotationTarget, isRotationPaused, isRotationShuffle, rotationIntervalSeconds
     }
 
     public init(from decoder: Decoder) throws {
@@ -37,6 +85,10 @@ public struct RepositoryState: Codable, Sendable {
         self.tokens = try container.decodeIfPresent([UnifiedToken].self, forKey: .tokens) ?? []
         self.galleries = try container.decodeIfPresent([DesktopGallery].self, forKey: .galleries) ?? []
         self.objktCurations = try container.decodeIfPresent([ObjktGallerySummary].self, forKey: .objktCurations) ?? []
+        self.activeRotationTarget = try container.decodeIfPresent(ActiveRotationTarget.self, forKey: .activeRotationTarget) ?? .allArt
+        self.isRotationPaused = try container.decodeIfPresent(Bool.self, forKey: .isRotationPaused) ?? false
+        self.isRotationShuffle = try container.decodeIfPresent(Bool.self, forKey: .isRotationShuffle) ?? true
+        self.rotationIntervalSeconds = try container.decodeIfPresent(Int.self, forKey: .rotationIntervalSeconds) ?? 300
     }
 
     public mutating func markCreatedTokens() {
@@ -198,7 +250,69 @@ public actor WalletRepository {
         for i in 0..<state.galleries.count {
             state.galleries[i].isActiveForRotation = (state.galleries[i].id == id)
         }
+        if let id = id, let g = state.galleries.first(where: { $0.id == id }) {
+            state.activeRotationTarget = .customGallery(id: g.id, name: g.name)
+        } else {
+            state.activeRotationTarget = .allArt
+        }
         try persist()
+        await MainActor.run {
+            NotificationCenter.default.post(name: .didChangeActiveRotation, object: nil)
+        }
+    }
+
+    // MARK: - Active Rotation Management
+
+    public func getActiveRotationTarget() -> ActiveRotationTarget {
+        return state.activeRotationTarget ?? .allArt
+    }
+
+    public func setActiveRotationTarget(_ target: ActiveRotationTarget) async throws {
+        state.activeRotationTarget = target
+        for idx in state.galleries.indices {
+            if case .customGallery(let gid, _) = target {
+                state.galleries[idx].isActiveForRotation = (state.galleries[idx].id == gid)
+            } else {
+                state.galleries[idx].isActiveForRotation = false
+            }
+        }
+        try persist()
+        await MainActor.run {
+            NotificationCenter.default.post(name: .didChangeActiveRotation, object: nil)
+        }
+    }
+
+    public func isRotationPaused() -> Bool {
+        return state.isRotationPaused
+    }
+
+    public func setRotationPaused(_ paused: Bool) async throws {
+        state.isRotationPaused = paused
+        try persist()
+        await MainActor.run {
+            NotificationCenter.default.post(name: .didChangeActiveRotation, object: nil)
+        }
+    }
+
+    public func isRotationShuffle() -> Bool {
+        return state.isRotationShuffle
+    }
+
+    public func setRotationShuffle(_ shuffle: Bool) async throws {
+        state.isRotationShuffle = shuffle
+        try persist()
+    }
+
+    public func getRotationInterval() -> Int {
+        return state.rotationIntervalSeconds
+    }
+
+    public func setRotationInterval(_ seconds: Int) async throws {
+        state.rotationIntervalSeconds = seconds
+        try persist()
+        await MainActor.run {
+            NotificationCenter.default.post(name: .didChangeActiveRotation, object: nil)
+        }
     }
 
     public func addTokenToGallery(tokenId: String, galleryId: UUID) async throws {
@@ -219,17 +333,30 @@ public actor WalletRepository {
         }
     }
 
-    /// Tokens to use for wallpaper rotation: if a custom gallery is set active, use its tokens; otherwise all tokens
+    /// Tokens to use for wallpaper rotation according to the active rotation target
     public func getActiveRotationTokens() -> [UnifiedToken] {
-        if let activeGallery = state.galleries.first(where: { $0.isActiveForRotation }),
-           !activeGallery.tokenIds.isEmpty {
-            let activeSet = Set(activeGallery.tokenIds)
-            let matched = state.tokens.filter { activeSet.contains($0.id) }
-            if !matched.isEmpty {
-                return matched
+        let target = state.activeRotationTarget ?? .allArt
+        switch target {
+        case .allArt:
+            return state.tokens
+        case .owned:
+            return state.tokens.filter { !$0.isCreated }
+        case .created:
+            return state.tokens.filter { $0.isCreated }
+        case .collection(let contract, _):
+            let matching = state.tokens.filter { $0.contract.caseInsensitiveCompare(contract) == .orderedSame }
+            return matching.isEmpty ? state.tokens : matching
+        case .customGallery(let gid, _):
+            guard let g = state.galleries.first(where: { $0.id == gid }), !g.tokenIds.isEmpty else {
+                return state.tokens
             }
+            let activeSet = Set(g.tokenIds)
+            let matched = state.tokens.filter { activeSet.contains($0.id) }
+            return matched.isEmpty ? state.tokens : matched
+        case .objktCuration(let cid, _):
+            let matched = state.tokens.filter { $0.rawMetadata?["curationId"] == cid }
+            return matched.isEmpty ? state.tokens : matched
         }
-        return state.tokens
     }
 
     // MARK: - objkt Curations Cache

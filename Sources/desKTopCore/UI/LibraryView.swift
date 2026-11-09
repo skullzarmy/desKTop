@@ -66,6 +66,13 @@ public struct CollectionContractItem: Identifiable, Hashable {
     public let contract: String
     public let displayName: String
     public let count: Int
+
+    public var shortContract: String {
+        guard contract.count > 10 else { return contract }
+        let p = contract.prefix(6)
+        let s = contract.suffix(4)
+        return "\(p)…\(s)"
+    }
 }
 
 /// Main desktop library management window
@@ -93,11 +100,18 @@ public struct LibraryView: View {
     @AppStorage("wallpaperMatteMode") private var matteMode: WallpaperMatteMode = .dynamicArtwork
     @AppStorage("wallpaperCustomHex") private var customHex: String = "#000000"
 
+    // Desktop Wallpaper Rotation State
+    @State private var activeRotationTarget: ActiveRotationTarget = .allArt
+    @State private var isRotationPaused: Bool = false
+    @State private var isRotationShuffle: Bool = true
+    @State private var rotationInterval: RotationInterval = .fiveMinutes
+
     // Sheets & modals
     @State private var isSourceSheetPresented: Bool = false
     @State private var isNewGallerySheetPresented: Bool = false
     @State private var newGalleryName: String = ""
     @State private var newGalleryDesc: String = ""
+    @State private var tokensToAddToNewGallery: [String] = []
     @State private var isSyncing: Bool = false
     @State private var syncStatusMessage: String?
 
@@ -547,6 +561,9 @@ public struct LibraryView: View {
                 .background(Color.secondary.opacity(0.06))
             }
 
+            // Desktop Rotation Player Header Bar
+            desktopRotationPlayerBar
+
             // Secondary Filter Toolbar
             filterToolbar
                 .padding(.horizontal, 16)
@@ -607,6 +624,239 @@ public struct LibraryView: View {
         .navigationTitle(navigationTitleString)
     }
 
+    // MARK: - Desktop Rotation Player Bar
+
+    private var desktopRotationPlayerBar: some View {
+        let currentTarget = currentActiveRotationTargetForCurrentView()
+        let isCurrentScopeRotating = isScopeCurrentlyRotating(currentTarget)
+
+        return HStack(spacing: 12) {
+            if isCurrentScopeRotating {
+                // Live Rotation Status Indicator
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(isRotationPaused ? Color.orange : Color.green)
+                        .frame(width: 10, height: 10)
+                        .overlay(
+                            Circle()
+                                .stroke(isRotationPaused ? Color.orange.opacity(0.4) : Color.green.opacity(0.4), lineWidth: 4)
+                        )
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Text(isRotationPaused ? "DESKTOP ROTATION PAUSED" : "ROTATING ON DESKTOP")
+                                .font(.system(size: 10, weight: .black))
+                                .foregroundColor(isRotationPaused ? .orange : .green)
+
+                            Text("• \(displayedTokens.count) artworks in scope")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+
+                        Text(currentScopeTitle)
+                            .font(.headline)
+                            .fontWeight(.bold)
+                            .lineLimit(1)
+                    }
+                }
+
+                Spacer()
+
+                // Playback controls: Next, Pause/Resume, Interval Picker, Shuffle
+                HStack(spacing: 8) {
+                    // Next Wallpaper Button
+                    Button(action: {
+                        NotificationCenter.default.post(name: .didRequestNextWallpaper, object: nil)
+                    }) {
+                        Label("Next Wallpaper", systemImage: "forward.end.fill")
+                            .font(.system(size: 11, weight: .bold))
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.regular)
+                    .help("Immediately advance to next desktop wallpaper")
+
+                    // Pause / Resume Button
+                    Button(action: {
+                        Task {
+                            try? await repository.setRotationPaused(!isRotationPaused)
+                            await reloadData()
+                        }
+                    }) {
+                        Image(systemName: isRotationPaused ? "play.fill" : "pause.fill")
+                            .font(.system(size: 12, weight: .bold))
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.regular)
+                    .help(isRotationPaused ? "Resume auto-rotation" : "Pause auto-rotation")
+
+                    // Interval Picker Dropdown
+                    Picker("", selection: Binding(
+                        get: { rotationInterval },
+                        set: { newInterval in
+                            rotationInterval = newInterval
+                            Task {
+                                try? await repository.setRotationInterval(newInterval.rawValue)
+                                await reloadData()
+                            }
+                        }
+                    )) {
+                        ForEach(RotationInterval.allCases) { interval in
+                            Text(interval.displayName).tag(interval)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 155)
+
+                    // Shuffle Toggle
+                    Button(action: {
+                        Task {
+                            try? await repository.setRotationShuffle(!isRotationShuffle)
+                            await reloadData()
+                        }
+                    }) {
+                        Image(systemName: isRotationShuffle ? "shuffle" : "arrow.triangle.2.circlepath")
+                            .font(.system(size: 12, weight: isRotationShuffle ? .black : .regular))
+                            .foregroundColor(isRotationShuffle ? .accentColor : .secondary)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.regular)
+                    .help(isRotationShuffle ? "Shuffle: ON (random order)" : "Shuffle: OFF (sequential order)")
+                }
+            } else {
+                // Not Currently Rotating This Scope: Prominent Action Bar!
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "display")
+                            .foregroundColor(.accentColor)
+                        Text("DESKTOP ART PLAYER")
+                            .font(.system(size: 10, weight: .black))
+                            .foregroundColor(.accentColor)
+                    }
+
+                    Text(currentScopeTitle)
+                        .font(.headline)
+                        .fontWeight(.bold)
+                        .lineLimit(1)
+                }
+
+                Spacer()
+
+                HStack(spacing: 10) {
+                    // 1-Click Save as Gallery button
+                    Button(action: {
+                        saveCurrentScopeAsGallery()
+                    }) {
+                        Label("Save as Gallery", systemImage: "plus.rectangle.on.rectangle")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.regular)
+                    .help("Save these artworks as a custom desKTop Gallery playlist")
+
+                    // Primary Start Rotating Button
+                    Button(action: {
+                        startRotatingCurrentScope(currentTarget)
+                    }) {
+                        Label("Start Rotating on Desktop", systemImage: "play.circle.fill")
+                            .font(.system(size: 12, weight: .bold))
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.regular)
+                    .tint(.green)
+                    .help("Set your Mac desktop background to automatically rotate artworks from this collection")
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(isCurrentScopeRotating ? Color.green.opacity(0.10) : Color.accentColor.opacity(0.08))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(isCurrentScopeRotating ? Color.green.opacity(0.35) : Color.accentColor.opacity(0.20), lineWidth: 1)
+        )
+        .padding(.horizontal, 16)
+        .padding(.top, 10)
+        .padding(.bottom, 6)
+    }
+
+    private func currentActiveRotationTargetForCurrentView() -> ActiveRotationTarget {
+        switch selectedSidebarItem {
+        case .allArt:
+            return .allArt
+        case .owned:
+            return .owned
+        case .created:
+            return .created
+        case .collection(let contract):
+            return .collection(contract: contract, displayName: resolvedName(for: contract))
+        case .customGallery(let gid):
+            let name = galleries.first(where: { $0.id == gid })?.name ?? "Gallery"
+            return .customGallery(id: gid, name: name)
+        case .objktCuration(let cid):
+            let name = objktCurations.first(where: { $0.galleryId == cid })?.name ?? "Curation"
+            return .objktCuration(id: cid, name: name)
+        case .collections:
+            return .allArt
+        }
+    }
+
+    private func isScopeCurrentlyRotating(_ target: ActiveRotationTarget) -> Bool {
+        switch (target, activeRotationTarget) {
+        case (.allArt, .allArt):
+            return true
+        case (.owned, .owned):
+            return true
+        case (.created, .created):
+            return true
+        case (.collection(let c1, _), .collection(let c2, _)):
+            return c1.caseInsensitiveCompare(c2) == .orderedSame
+        case (.customGallery(let id1, _), .customGallery(let id2, _)):
+            return id1 == id2
+        case (.objktCuration(let id1, _), .objktCuration(let id2, _)):
+            return id1 == id2
+        default:
+            return false
+        }
+    }
+
+    private var currentScopeTitle: String {
+        switch selectedSidebarItem {
+        case .allArt:
+            return "All Art"
+        case .owned:
+            return "Owned Art"
+        case .created:
+            return "Created Art"
+        case .collection(let contract):
+            return resolvedName(for: contract)
+        case .customGallery(let gid):
+            return galleries.first(where: { $0.id == gid })?.name ?? "Gallery"
+        case .objktCuration(let cid):
+            return objktCurations.first(where: { $0.galleryId == cid })?.name ?? "Curation"
+        case .collections:
+            return "Collections"
+        }
+    }
+
+    private func startRotatingCurrentScope(_ target: ActiveRotationTarget) {
+        Task {
+            try? await repository.setActiveRotationTarget(target)
+            try? await repository.setRotationPaused(false)
+            await reloadData()
+            NotificationCenter.default.post(name: .didRequestNextWallpaper, object: nil)
+        }
+    }
+
+    private func saveCurrentScopeAsGallery() {
+        tokensToAddToNewGallery = displayedTokens.map(\.id)
+        newGalleryName = currentScopeTitle
+        newGalleryDesc = "Created from \(currentScopeTitle) with \(tokensToAddToNewGallery.count) artworks"
+        isNewGallerySheetPresented = true
+    }
+
     // MARK: - Subviews: Dedicated Collections Browser
 
     private var collectionsBrowserView: some View {
@@ -637,6 +887,32 @@ public struct LibraryView: View {
             .padding(.vertical, 10)
             .background(.ultraThinMaterial)
 
+            // If a collection is currently rotating, show banner
+            if case .collection(_, let displayName) = activeRotationTarget {
+                HStack(spacing: 10) {
+                    Circle().fill(isRotationPaused ? Color.orange : Color.green).frame(width: 8, height: 8)
+                    Text(isRotationPaused ? "Desktop Rotation Paused:" : "Live Desktop Rotation:")
+                        .font(.caption)
+                        .fontWeight(.bold)
+                        .foregroundColor(isRotationPaused ? .orange : .green)
+                    Text(displayName)
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                    Spacer()
+                    Button(action: {
+                        NotificationCenter.default.post(name: .didRequestNextWallpaper, object: nil)
+                    }) {
+                        Label("Next Wallpaper", systemImage: "forward.end.fill")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .background(Color.green.opacity(0.08))
+            }
+
             Divider()
 
             // Collections Grid
@@ -644,11 +920,22 @@ public struct LibraryView: View {
                 let columns = [GridItem(.adaptive(minimum: 220, maximum: 280), spacing: 16)]
                 LazyVGrid(columns: columns, spacing: 16) {
                     ForEach(filteredCollections) { col in
+                        let isRotating: Bool = {
+                            if case .collection(let activeContract, _) = activeRotationTarget {
+                                return activeContract.caseInsensitiveCompare(col.contract) == .orderedSame
+                            }
+                            return false
+                        }()
+
                         CollectionCardView(
                             item: col,
-                            previewTokens: tokens.filter { $0.contract.lowercased() == col.contract.lowercased() }.prefix(4),
+                            previewTokens: tokens.filter { $0.contract.caseInsensitiveCompare(col.contract) == .orderedSame }.prefix(4),
+                            isRotating: isRotating,
                             onSelect: {
                                 selectedSidebarItem = .collection(col.contract)
+                            },
+                            onStartRotating: {
+                                startRotatingCurrentScope(.collection(contract: col.contract, displayName: col.displayName))
                             }
                         )
                     }
@@ -906,7 +1193,13 @@ public struct LibraryView: View {
                     let name = newGalleryName.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !name.isEmpty else { return }
                     Task {
-                        _ = try? await repository.createGallery(name: name, description: newGalleryDesc.isEmpty ? nil : newGalleryDesc)
+                        let g = try? await repository.createGallery(name: name, description: newGalleryDesc.isEmpty ? nil : newGalleryDesc)
+                        if let g = g, !tokensToAddToNewGallery.isEmpty {
+                            for tid in tokensToAddToNewGallery {
+                                try? await repository.addTokenToGallery(tokenId: tid, galleryId: g.id)
+                            }
+                        }
+                        tokensToAddToNewGallery = []
                         await reloadData()
                         isNewGallerySheetPresented = false
                     }
@@ -928,6 +1221,11 @@ public struct LibraryView: View {
         self.tokens = await repository.getTokens()
         self.galleries = await repository.getGalleries()
         self.objktCurations = await repository.getObjktCurations()
+        self.activeRotationTarget = await repository.getActiveRotationTarget()
+        self.isRotationPaused = await repository.isRotationPaused()
+        self.isRotationShuffle = await repository.isRotationShuffle()
+        let intervalSec = await repository.getRotationInterval()
+        self.rotationInterval = RotationInterval(rawValue: intervalSec) ?? .fiveMinutes
         resolveTopCollections()
     }
 
@@ -1035,14 +1333,16 @@ public struct LibraryView: View {
 struct CollectionCardView: View {
     let item: CollectionContractItem
     let previewTokens: ArraySlice<UnifiedToken>
+    let isRotating: Bool
     let onSelect: () -> Void
+    let onStartRotating: () -> Void
 
     @State private var isHovered: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             // Preview Image Grid (up to 4 thumbnails)
-            ZStack {
+            ZStack(alignment: .topTrailing) {
                 Color.black.opacity(0.12)
 
                 if previewTokens.isEmpty {
@@ -1077,6 +1377,19 @@ struct CollectionCardView: View {
                         }
                     }
                 }
+
+                // Rotating badge on preview
+                if isRotating {
+                    Text("LIVE ON DESKTOP")
+                        .font(.system(size: 8, weight: .black))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(Color.green)
+                        .cornerRadius(4)
+                        .shadow(radius: 2)
+                        .padding(6)
+                }
             }
             .frame(height: 140)
             .clipped()
@@ -1096,19 +1409,34 @@ struct CollectionCardView: View {
 
                     Spacer()
 
-                    Text(String(item.contract.prefix(6)) + "…" + String(item.contract.suffix(4)))
+                    Text(item.shortContract)
                         .font(.caption2)
                         .foregroundColor(.secondary.opacity(0.7))
                 }
             }
             .padding(.horizontal, 4)
+
+            // 1-Click Rotate Action Button
+            Button(action: onStartRotating) {
+                HStack(spacing: 4) {
+                    Image(systemName: isRotating ? "checkmark.circle.fill" : "play.fill")
+                        .font(.system(size: 10))
+                    Text(isRotating ? "Rotating on Desktop" : "Rotate on Desktop")
+                        .font(.system(size: 11, weight: .semibold))
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(isRotating ? Color.green : Color.accentColor)
+            .controlSize(.small)
+            .padding(.top, 2)
         }
         .padding(10)
         .background(isHovered ? Color.secondary.opacity(0.12) : Color.secondary.opacity(0.06))
         .cornerRadius(10)
         .overlay(
             RoundedRectangle(cornerRadius: 10)
-                .stroke(isHovered ? Color.accentColor.opacity(0.5) : Color.secondary.opacity(0.15), lineWidth: 1)
+                .stroke(isRotating ? Color.green.opacity(0.5) : (isHovered ? Color.accentColor.opacity(0.5) : Color.secondary.opacity(0.15)), lineWidth: isRotating ? 2 : 1)
         )
         .onHover { isHovered = $0 }
         .contentShape(Rectangle())
@@ -1136,66 +1464,68 @@ struct TokenCardView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            // Artwork Image Box
-            ZStack(alignment: .bottomTrailing) {
-                Color.secondary.opacity(0.08)
+            // Artwork Image Box (Strictly bounded geometry so GIFs or WebViews can never overflow)
+            GeometryReader { geo in
+                ZStack(alignment: .bottomTrailing) {
+                    Color.black.opacity(0.15)
 
-                ArtworkThumbnailView(token: token, contentMode: .fill)
-                    .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
-                    .clipped()
+                    ArtworkThumbnailView(token: token, contentMode: .fill)
+                        .frame(width: geo.size.width, height: geo.size.height)
+                        .clipped()
 
-                // Top Left Live Badge
-                if isLiveOnDesktop {
-                    VStack {
-                        HStack {
-                            Text("LIVE ON DESKTOP")
-                                .font(.system(size: 8, weight: .black))
-                                .foregroundColor(.white)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 3)
-                                .background(Color.blue)
-                                .cornerRadius(4)
-                                .shadow(radius: 2)
-                                .padding(6)
-                            Spacer()
-                        }
-                        Spacer()
-                    }
-                }
-
-                // Bottom Right Category Badge
-                Text(token.mediaCategory.rawValue.capitalized)
-                    .font(.system(size: 9, weight: .bold))
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(.ultraThinMaterial)
-                    .cornerRadius(4)
-                    .padding(6)
-
-                // Quick Set Hover Action Overlay
-                if isHovered {
-                    VStack {
-                        Spacer()
-                        HStack {
-                            Button(action: onSetAsWallpaper) {
-                                Label("Set Desktop", systemImage: "display")
-                                    .font(.system(size: 11, weight: .semibold))
+                    // Top Left Live Badge
+                    if isLiveOnDesktop {
+                        VStack {
+                            HStack {
+                                Text("LIVE ON DESKTOP")
+                                    .font(.system(size: 8, weight: .black))
+                                    .foregroundColor(.white)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 3)
+                                    .background(Color.blue)
+                                    .cornerRadius(4)
+                                    .shadow(radius: 2)
+                                    .padding(6)
+                                Spacer()
                             }
-                            .buttonStyle(.borderedProminent)
-                            .controlSize(.small)
-                            .shadow(radius: 4)
-
                             Spacer()
                         }
-                        .padding(8)
                     }
-                    .transition(.opacity)
+
+                    // Bottom Right Category Badge
+                    Text(token.mediaCategory.rawValue.capitalized)
+                        .font(.system(size: 9, weight: .bold))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(.ultraThinMaterial)
+                        .cornerRadius(4)
+                        .padding(6)
+
+                    // Quick Set Hover Action Overlay
+                    if isHovered {
+                        VStack {
+                            Spacer()
+                            HStack {
+                                Button(action: onSetAsWallpaper) {
+                                    Label("Set Desktop", systemImage: "display")
+                                        .font(.system(size: 11, weight: .semibold))
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .controlSize(.small)
+                                .shadow(radius: 4)
+
+                                Spacer()
+                            }
+                            .padding(8)
+                        }
+                        .transition(.opacity)
+                    }
                 }
+                .frame(width: geo.size.width, height: geo.size.height)
+                .clipped()
             }
-            .frame(minWidth: 0, maxWidth: .infinity)
             .aspectRatio(1.0, contentMode: .fit)
-            .clipped()
-            .cornerRadius(8)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
 
             // Metadata info & collection link
             VStack(alignment: .leading, spacing: 2) {
@@ -1278,15 +1608,22 @@ struct TokenCardView: View {
     }
 }
 
+// MARK: - In-Memory Image Cache
+
+final class ImageMemoryCache: @unchecked Sendable {
+    nonisolated(unsafe) static let shared = NSCache<NSURL, NSImage>()
+}
+
 // MARK: - Native Animated GIF Player View
 
 final class NonExpandingImageView: NSImageView {
     override var intrinsicContentSize: NSSize {
-        return NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric)
+        return NSSize(width: 100, height: 100)
     }
 
     override func layout() {
         super.layout()
+        wantsLayer = true
         layer?.masksToBounds = true
     }
 }
@@ -1314,9 +1651,17 @@ public struct AnimatedGIFView: NSViewRepresentable {
         return view
     }
 
+    public func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSImageView, context: Context) -> CGSize? {
+        let w = proposal.width ?? 160
+        let h = proposal.height ?? 160
+        return CGSize(width: w, height: h)
+    }
+
     public func updateNSView(_ nsView: NSImageView, context: Context) {
         nsView.imageScaling = .scaleProportionallyUpOrDown
         nsView.animates = true
+        nsView.wantsLayer = true
+        nsView.layer?.masksToBounds = true
         guard let url = url else {
             nsView.image = nil
             return
@@ -1324,12 +1669,23 @@ public struct AnimatedGIFView: NSViewRepresentable {
 
         if nsView.tag != url.hashValue {
             nsView.tag = url.hashValue
+            if let cached = ImageMemoryCache.shared.object(forKey: url as NSURL) {
+                nsView.image = cached
+                nsView.animates = true
+                nsView.needsDisplay = true
+                return
+            }
+
             Task.detached(priority: .userInitiated) {
-                if let data = try? Data(contentsOf: url),
+                if let (data, _) = try? await URLSession.shared.data(from: url),
                    let img = NSImage(data: data) {
+                    ImageMemoryCache.shared.setObject(img, forKey: url as NSURL)
                     await MainActor.run {
-                        nsView.image = img
-                        nsView.animates = true
+                        if nsView.tag == url.hashValue {
+                            nsView.image = img
+                            nsView.animates = true
+                            nsView.needsDisplay = true
+                        }
                     }
                 }
             }

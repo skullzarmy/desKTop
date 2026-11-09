@@ -43,6 +43,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private let wallpaperService = StillWallpaperService()
     private let vault = MediaVault()
     private var canvasControllers: [String: DesktopCanvasWindowController] = [:]
+    private var rotationScheduler: RotationScheduler?
+    private var rotationObserver: NSObjectProtocol?
+    private var nextWallpaperObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Strictly start with .accessory policy: zero presence in Dock or Cmd+Tab
@@ -56,6 +59,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
         setupStatusItem()
         setupPopover()
+        setupRotationScheduler()
+    }
+
+    private func setupRotationScheduler() {
+        Task {
+            let intervalSeconds = await repository.getRotationInterval()
+            let interval = RotationInterval(rawValue: intervalSeconds) ?? .fiveMinutes
+            let isPaused = await repository.isRotationPaused()
+
+            self.rotationScheduler = RotationScheduler(interval: interval) { [weak self] in
+                Task { @MainActor in
+                    await self?.rotateNext()
+                }
+            }
+            self.rotationScheduler?.isPaused = isPaused
+
+            // Listen for active rotation target, interval, or pause changes from Library or MenuBar
+            self.rotationObserver = NotificationCenter.default.addObserver(
+                forName: .didChangeActiveRotation,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self = self else { return }
+                    let newSecs = await self.repository.getRotationInterval()
+                    let newInterval = RotationInterval(rawValue: newSecs) ?? .fiveMinutes
+                    let paused = await self.repository.isRotationPaused()
+                    self.rotationScheduler?.interval = newInterval
+                    self.rotationScheduler?.isPaused = paused
+
+                    // Advance immediately to next wallpaper from newly selected collection/scope
+                    if !paused {
+                        await self.rotateNext()
+                    }
+                }
+            }
+
+            self.nextWallpaperObserver = NotificationCenter.default.addObserver(
+                forName: .didRequestNextWallpaper,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in
+                    await self?.rotateNext()
+                }
+            }
+        }
     }
 
     private func setupStatusItem() {
@@ -266,16 +316,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     private func rotateNext() async {
+        let isPaused = await repository.isRotationPaused()
+        if isPaused { return }
+
         let tokens = await repository.getActiveRotationTokens()
         guard !tokens.isEmpty else { return }
 
-        if let current = viewModel.currentToken,
-           let idx = tokens.firstIndex(where: { $0.id == current.id }) {
+        let isShuffle = await repository.isRotationShuffle()
+        let nextToken: UnifiedToken
+
+        if isShuffle && tokens.count > 1 {
+            let currentId = viewModel.currentToken?.id
+            let pool = tokens.filter { $0.id != currentId }
+            nextToken = pool.randomElement() ?? tokens.randomElement()!
+        } else if let current = viewModel.currentToken,
+                  let idx = tokens.firstIndex(where: { $0.id == current.id }) {
             let nextIdx = (idx + 1) % tokens.count
-            await setTokenAsWallpaper(tokens[nextIdx])
-        } else if let first = tokens.first {
-            await setTokenAsWallpaper(first)
+            nextToken = tokens[nextIdx]
+        } else {
+            nextToken = tokens.first!
         }
+
+        await setTokenAsWallpaper(nextToken)
     }
 
     private func rotatePrevious() async {

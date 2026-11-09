@@ -72,7 +72,7 @@ public struct UnifiedTokenTests {
 
         // IPFS Gateway Public URL Resolution
         let resolvedURL = IPFSGatewayManager.resolvePublicURL(for: "ipfs://QmQyNNfhfnFSW3geXMRau7JrKq38FuCi3Ds12axxEnREdf")
-        try assertEqual(resolvedURL?.absoluteString, "https://gateway.pinata.cloud/ipfs/QmQyNNfhfnFSW3geXMRau7JrKq38FuCi3Ds12axxEnREdf")
+        try assertEqual(resolvedURL?.absoluteString, "https://ipfs.fileship.xyz/QmQyNNfhfnFSW3geXMRau7JrKq38FuCi3Ds12axxEnREdf")
 
         // Composite ID
         let token = UnifiedToken(

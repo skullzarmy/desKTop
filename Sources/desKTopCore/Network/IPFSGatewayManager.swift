@@ -14,7 +14,7 @@ public struct GatewayStatus: Sendable {
 /// Actor managing IPFS & Arweave gateway endpoints with circuit-breaker quarantines and fallback racing
 public actor IPFSGatewayManager {
     public static let defaultIPFSGateways: [URL] = [
-        URL(string: "https://gateway.pinata.cloud/ipfs/")!,
+        URL(string: "https://ipfs.fileship.xyz/")!,
         URL(string: "https://cloudflare-ipfs.com/ipfs/")!,
         URL(string: "https://dweb.link/ipfs/")!,
         URL(string: "https://ipfs.io/ipfs/")!
@@ -47,7 +47,7 @@ public actor IPFSGatewayManager {
             ipfsPath = String(ipfsPath.dropFirst(5))
         }
 
-        return URL(string: "https://gateway.pinata.cloud/ipfs/\(ipfsPath)")
+        return URL(string: "https://ipfs.fileship.xyz/\(ipfsPath)")
     }
 
     public static let quarantineDuration: TimeInterval = 15 * 60 // 15 minutes
