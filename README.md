@@ -19,13 +19,47 @@ Enter any wallet address or `.tez` domain. desKTop turns your Mac's screen into 
 
 ### Installation
 
-Download the latest universal build for Apple Silicon and Intel:
+Download the latest release build for macOS (Universal: Apple Silicon & Intel):
 
+- **[Download desKTop.dmg](https://github.com/skullzarmy/desKTop/releases/latest/download/desKTop.dmg)** *(Recommended)*
 - **[Download desKTop.zip](https://github.com/skullzarmy/desKTop/releases/latest/download/desKTop.zip)**
 
-Unzip and drag `desKTop.app` to your `/Applications` folder.
+Open the `.dmg` and drag `desKTop.app` to your `/Applications` folder.
 
 **Compatibility**: macOS Tahoe (16.0+), macOS Sequoia (15.0+), macOS Sonoma (14.0+).
+
+---
+
+### First Launch on macOS (Gatekeeper)
+
+desKTop is free and unencumbered software released into the public domain under [The Unlicense](LICENSE) with zero tracking, zero telemetry, and zero fees.
+
+Because we do not pay Apple $99/year for Apple Developer ID notarization, macOS Gatekeeper will ask for your confirmation the first time you run it.
+
+#### Option A: Three-Click Permission
+
+1. **Launch Once**: Double-click `desKTop.app` in your Applications folder. When macOS alerts you that the developer cannot be verified, click **Done** (or **Cancel**).
+2. **Open System Settings**: Click the **System Settings** icon in your Dock.
+   
+   <img src="docs/images/step1-settings.png" alt="System Settings in Dock" width="75">
+
+3. **Navigate to Privacy & Security**: Select **Privacy & Security** in the sidebar and scroll down to the *Security* section near the bottom.
+   
+   <img src="docs/images/step2-privacy.png" alt="Privacy & Security tab in System Settings" width="300">
+
+4. **Click "Open Anyway"**: You will see a prompt stating *"desKTop.app was blocked to protect your Mac."* Click **Open Anyway**, authenticate with Touch ID or your Mac password, and click **Open**.
+   
+   <img src="docs/images/step3-open-anyway.png" alt="Gatekeeper Open Anyway prompt" width="500">
+
+You only have to do this once. After this initial approval, desKTop launches instantly from Applications or login items.
+
+#### Option B: Terminal Shortcut (One Command)
+
+Alternatively, strip the quarantine attribute via Terminal before opening:
+
+```bash
+xattr -c /Applications/desKTop.app
+```
 
 ---
 
@@ -47,11 +81,11 @@ cd desKTop
 # Bundle the application (.app)
 ./scripts/bundle.sh
 
-# Generate release zip
-./scripts/bundle.sh --release --zip
+# Generate release bundle (.app, .zip, and styled .dmg)
+./scripts/bundle.sh --release
 ```
 
-The resulting `desKTop.app` bundle will be generated in `build/desKTop.app`.
+The resulting `desKTop.app` bundle and `desKTop.dmg` will be generated in `build/`.
 
 ---
 
