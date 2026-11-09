@@ -12,6 +12,10 @@ let package = Package(
             targets: ["desKTopCore"]
         ),
         .executable(
+            name: "desKTop",
+            targets: ["desKTopApp"]
+        ),
+        .executable(
             name: "desKTopCLI",
             targets: ["desKTopCLI"]
         ),
@@ -25,6 +29,11 @@ let package = Package(
         .target(
             name: "desKTopCore",
             path: "Sources/desKTopCore"
+        ),
+        .executableTarget(
+            name: "desKTopApp",
+            dependencies: ["desKTopCore"],
+            path: "Sources/desKTopApp"
         ),
         .executableTarget(
             name: "desKTopCLI",
