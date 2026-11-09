@@ -239,7 +239,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
         viewModel.statusMessage = "Loading \(token.name)..."
         do {
-            let (fileURL, _) = try await vault.getOrFetchMedia(for: uri)
+            // Resolve wallpaper media with automatic visual fallback if artifact is raw JSON or text
+            var fileURL: URL
+            do {
+                let (fURL, _) = try await vault.getOrFetchMedia(for: uri)
+                let isDecodable = (NSImage(contentsOf: fURL) != nil)
+                if !isDecodable && token.mediaCategory != .interactiveHtml && token.mediaCategory != .aleatory && token.mediaCategory != .bootloader {
+                    if let fallback = [token.displayUri, token.thumbnailUri].compactMap({ $0 }).first(where: { UnifiedToken.isVisualUri($0) && $0 != uri }) {
+                        let (altURL, _) = try await vault.getOrFetchMedia(for: fallback)
+                        fileURL = altURL
+                    } else {
+                        fileURL = fURL
+                    }
+                } else {
+                    fileURL = fURL
+                }
+            } catch {
+                if let fallback = [token.displayUri, token.thumbnailUri].compactMap({ $0 }).first(where: { UnifiedToken.isVisualUri($0) && $0 != uri }) {
+                    let (altURL, _) = try await vault.getOrFetchMedia(for: fallback)
+                    fileURL = altURL
+                } else {
+                    throw error
+                }
+            }
+
             guard let screen = NSScreen.main else { return }
             let screenID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID ?? CGMainDisplayID()
             let displayUUID = DisplayManager.persistentUUID(for: screenID)

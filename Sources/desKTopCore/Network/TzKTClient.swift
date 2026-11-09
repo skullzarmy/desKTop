@@ -286,11 +286,35 @@ public actor TzKTClient {
                 rawMeta[k] = str
             }
         }
+        if let tagsArray = metadata["tags"] as? [String] {
+            rawMeta["tags"] = tagsArray.joined(separator: ",")
+        }
         if let contractAlias = contractDict["alias"] as? String, !contractAlias.isEmpty {
             rawMeta["contractAlias"] = contractAlias
         }
 
-        let mimeType = metadata["mimeType"] as? String ?? formats.first?.mimeType
+        // Resolve the true artifact MIME type (prioritizing the master artifact over generated display/thumbnail WebP/JPEG)
+        let artifactFormat = formats.first(where: {
+            guard let fUri = $0.uri, let aUri = artifactUri else { return false }
+            return fUri == aUri || fUri.contains(aUri) || aUri.contains(fUri)
+        })
+        let gifFormat = formats.first(where: { ($0.mimeType ?? "").lowercased() == "image/gif" })
+        let videoFormat = formats.first(where: { ($0.mimeType ?? "").lowercased().hasPrefix("video/") })
+        let htmlFormat = formats.first(where: {
+            let m = ($0.mimeType ?? "").lowercased()
+            return m == "text/html" || m == "application/x-directory"
+        })
+        let hasGifTag = (rawMeta["tags"] ?? "").lowercased().contains("gif")
+
+        let mimeType: String? = {
+            if let m = artifactFormat?.mimeType, !m.isEmpty { return m }
+            if let m = metadata["mimeType"] as? String, !m.isEmpty { return m }
+            if let m = gifFormat?.mimeType { return m }
+            if hasGifTag { return "image/gif" }
+            if let m = videoFormat?.mimeType { return m }
+            if let m = htmlFormat?.mimeType { return m }
+            return formats.first?.mimeType
+        }()
 
         return UnifiedToken(
             contract: contractAddress,

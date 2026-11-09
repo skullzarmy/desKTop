@@ -73,6 +73,22 @@ public enum MediaCategory: String, Hashable, Codable, Sendable {
     case fxhash
     case audio3d
     case unknown
+
+    public var displayName: String {
+        switch self {
+        case .staticImage: return "Image"
+        case .vectorImage: return "Vector"
+        case .animatedImage: return "GIF"
+        case .video: return "Video"
+        case .interactiveHtml: return "Interactive"
+        case .aleatory: return "Aleatory"
+        case .bootloader: return "Bytecode"
+        case .editArt: return "EditArt"
+        case .fxhash: return "Generative"
+        case .audio3d: return "3D / Audio"
+        case .unknown: return "Artwork"
+        }
+    }
 }
 
 /// Normalized canonical token model across all Tezos indexers (TzKT, objkt.com, Aleatory)
@@ -173,10 +189,72 @@ public struct UnifiedToken: Identifiable, Hashable, Codable, Sendable {
         return nil
     }
 
-    /// Primary URI to render as wallpaper (displayUri preferred for audio/3D, artifactUri preferred for visuals)
+    /// Tests whether a URI string points to visual/displayable media rather than raw metadata text or JSON
+    public static func isVisualUri(_ uriString: String?) -> Bool {
+        guard let u = uriString?.trimmingCharacters(in: .whitespacesAndNewlines), !u.isEmpty else { return false }
+        let lower = u.lowercased()
+        if lower.hasSuffix(".json") || lower.contains("/metadata") || lower.hasSuffix(".md") || lower.hasSuffix(".txt") || lower.hasSuffix(".pdf") {
+            return false
+        }
+        return true
+    }
+
+    /// Best visual thumbnail URI (filters out generic HEN placeholder icons and non-visual metadata)
+    public var preferredThumbnailUri: String? {
+        let henPlaceholder = "QmNrhZHUaEqxhyLfqoq1mtHSipkWHeT31LNHb1QEbDHgnc"
+
+        // For audio/3D, prefer displayUri cover
+        if mediaCategory == .audio3d {
+            if let disp = displayUri, Self.isVisualUri(disp), !disp.contains(henPlaceholder) { return disp }
+            if let thumb = thumbnailUri, Self.isVisualUri(thumb), !thumb.contains(henPlaceholder) { return thumb }
+        }
+
+        // For GIFs / animated, if thumbnailUri or displayUri is lightweight, prefer it for fast grid rendering
+        if mediaCategory == .animatedImage {
+            if let thumb = thumbnailUri, Self.isVisualUri(thumb), !thumb.contains(henPlaceholder) { return thumb }
+            if let disp = displayUri, Self.isVisualUri(disp), !disp.contains(henPlaceholder) { return disp }
+            if let art = artifactUri, Self.isVisualUri(art) { return art }
+        }
+
+        // Standard hierarchy
+        if let thumb = thumbnailUri, Self.isVisualUri(thumb), !thumb.contains(henPlaceholder) {
+            return thumb
+        }
+        if let disp = displayUri, Self.isVisualUri(disp), !disp.contains(henPlaceholder) {
+            return disp
+        }
+        if let art = artifactUri, Self.isVisualUri(art) {
+            return art
+        }
+        if let thumb = thumbnailUri, Self.isVisualUri(thumb) { return thumb }
+        if let disp = displayUri, Self.isVisualUri(disp) { return disp }
+        return thumbnailUri ?? displayUri ?? artifactUri
+    }
+
+    /// Primary URI to render as wallpaper (displayUri preferred for audio/3D, artifactUri preferred for visuals; rejects raw JSON/text)
     public var primaryWallpaperUri: String? {
         if mediaCategory == .audio3d {
-            return displayUri ?? thumbnailUri ?? artifactUri
+            if let disp = displayUri, Self.isVisualUri(disp) { return disp }
+            if let thumb = thumbnailUri, Self.isVisualUri(thumb) { return thumb }
+            if let art = artifactUri, Self.isVisualUri(art) { return art }
+        }
+
+        // Interactive / generative art relies on artifactUri
+        if isFxhash || mediaCategory == .interactiveHtml || mediaCategory == .aleatory || mediaCategory == .bootloader {
+            if let art = artifactUri, Self.isVisualUri(art) || art.contains("fxhash=") {
+                return art
+            }
+        }
+
+        // Visual tokens: artifactUri if visual, else fallback to displayUri or thumbnailUri
+        if let art = artifactUri, Self.isVisualUri(art) {
+            return art
+        }
+        if let disp = displayUri, Self.isVisualUri(disp) {
+            return disp
+        }
+        if let thumb = thumbnailUri, Self.isVisualUri(thumb) {
+            return thumb
         }
         return artifactUri ?? displayUri ?? thumbnailUri
     }
@@ -240,14 +318,30 @@ public struct UnifiedToken: Identifiable, Hashable, Codable, Sendable {
             return .vectorImage
         }
 
-        // 7. Animated Graphics
-        if mime == "image/gif" || uri.hasSuffix(".gif") || display.hasSuffix(".gif") {
+        // 7. Animated Graphics (GIFs)
+        let isGifMime = mime == "image/gif"
+        let isGifUri = uri.hasSuffix(".gif") || display.hasSuffix(".gif")
+        let isGifInFormats = formats.contains { f in
+            let fm = (f.mimeType ?? "").lowercased()
+            let fu = (f.uri ?? "").lowercased()
+            return fm == "image/gif" || fu.hasSuffix(".gif")
+        }
+        let hasGifTag = (rawMetadata?["tags"] ?? "").lowercased().contains("gif")
+        let isGifRaw = (rawMetadata?["mime"] ?? rawMetadata?["mimeType"] ?? "").lowercased() == "image/gif"
+        if isGifMime || isGifUri || isGifInFormats || hasGifTag || isGifRaw {
             return .animatedImage
         }
 
         // 8. Videos
-        if mime.hasPrefix("video/") || uri.hasSuffix(".mp4") || uri.hasSuffix(".webm") || uri.hasSuffix(".mov") ||
-           display.hasSuffix(".mp4") || display.hasSuffix(".webm") || display.hasSuffix(".mov") {
+        let isVideoMime = mime.hasPrefix("video/")
+        let isVideoUri = uri.hasSuffix(".mp4") || uri.hasSuffix(".webm") || uri.hasSuffix(".mov") ||
+            display.hasSuffix(".mp4") || display.hasSuffix(".webm") || display.hasSuffix(".mov")
+        let isVideoInFormats = formats.contains { f in
+            let fm = (f.mimeType ?? "").lowercased()
+            let fu = (f.uri ?? "").lowercased()
+            return fm.hasPrefix("video/") || fu.hasSuffix(".mp4") || fu.hasSuffix(".webm") || fu.hasSuffix(".mov")
+        }
+        if isVideoMime || isVideoUri || isVideoInFormats {
             return .video
         }
 

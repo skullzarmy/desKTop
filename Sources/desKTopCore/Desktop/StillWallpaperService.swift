@@ -55,6 +55,11 @@ public final class StillWallpaperService: Sendable {
         scaling: WallpaperScaling = .fit,
         matteColor: NSColor? = nil
     ) throws -> URL {
+        // Validate that imageURL is a valid decodable image (rejects raw JSON, markdown, or text files)
+        guard let testImg = NSImage(contentsOf: imageURL), testImg.isValid, testImg.size.width > 0 else {
+            throw WallpaperError.imageLoadFailed
+        }
+
         let targetURL = try prepareCacheBustedURL(sourceURL: imageURL, tokenId: tokenId)
 
         var options: [NSWorkspace.DesktopImageOptionKey: Any] = [:]

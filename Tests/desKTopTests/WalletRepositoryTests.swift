@@ -64,5 +64,48 @@ public struct WalletRepositoryTests {
         try assertEqual(tokens.count, 2)
         let found = tokens.first(where: { $0.id == token1.id })
         try assertEqual(found?.name, "Art A (Remastered)")
+
+        // 4. Smart Galleries (Dynamic Filter Rules) vs Curated Galleries (Hand-Picked Items)
+        let gifToken = UnifiedToken(
+            contract: "KT1gif",
+            tokenId: "10",
+            name: "Animated Motion Piece",
+            mimeType: "image/gif"
+        )
+        let stillToken = UnifiedToken(
+            contract: "KT1still",
+            tokenId: "20",
+            name: "Static Oil Painting",
+            mimeType: "image/jpeg"
+        )
+        try await repository.upsertTokens([gifToken, stillToken])
+
+        // Create Smart Gallery matching format "GIF"
+        let smartCriteria = GalleryFilterCriteria(formatFilter: "GIF")
+        let smartGallery = try await repository.createSmartGallery(
+            name: "Only GIFs",
+            description: "Smart dynamic playlist",
+            criteria: smartCriteria
+        )
+        try assertTrue(smartGallery.isSmart)
+        try assertEqual(smartGallery.type, .smart)
+
+        // Matching tokens dynamically evaluates against library
+        let currentTokens = await repository.getTokens()
+        let smartMatches = smartGallery.matchingTokens(from: currentTokens)
+        try assertEqual(smartMatches.count, 1)
+        try assertEqual(smartMatches.first?.name, "Animated Motion Piece")
+
+        // Create Hand-Curated Gallery with stillToken
+        let manualGallery = try await repository.createManualGallery(
+            name: "Favorites",
+            description: "Hand-picked items",
+            tokenIds: [stillToken.id]
+        )
+        try assertFalse(manualGallery.isSmart)
+        try assertEqual(manualGallery.type, .manual)
+        let manualMatches = manualGallery.matchingTokens(from: currentTokens)
+        try assertEqual(manualMatches.count, 1)
+        try assertEqual(manualMatches.first?.name, "Static Oil Painting")
     }
 }

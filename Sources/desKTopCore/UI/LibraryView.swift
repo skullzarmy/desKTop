@@ -134,6 +134,8 @@ public struct LibraryView: View {
     @State private var isNewGallerySheetPresented: Bool = false
     @State private var newGalleryName: String = ""
     @State private var newGalleryDesc: String = ""
+    @State private var newGalleryType: GalleryType = .smart
+    @State private var newGalleryCriteria: GalleryFilterCriteria? = nil
     @State private var tokensToAddToNewGallery: [String] = []
     @State private var isSyncing: Bool = false
     @State private var syncStatusMessage: String?
@@ -200,8 +202,7 @@ public struct LibraryView: View {
             baseTokens = tokens
         case .customGallery(let gid):
             if let gallery = galleries.first(where: { $0.id == gid }) {
-                let idSet = Set(gallery.tokenIds)
-                baseTokens = tokens.filter { idSet.contains($0.id) }
+                baseTokens = gallery.matchingTokens(from: tokens, artistDisplayName: { artistDisplayName(for: $0) })
             } else {
                 baseTokens = []
             }
@@ -306,8 +307,7 @@ public struct LibraryView: View {
             scopedTokens = tokens.filter { $0.isOwned }
         case .customGallery(let gid):
             if let gallery = galleries.first(where: { $0.id == gid }) {
-                let idSet = Set(gallery.tokenIds)
-                scopedTokens = tokens.filter { idSet.contains($0.id) }
+                scopedTokens = gallery.matchingTokens(from: tokens, artistDisplayName: { artistDisplayName(for: $0) })
             } else {
                 scopedTokens = []
             }
@@ -456,16 +456,27 @@ public struct LibraryView: View {
                 // Section: desKTop Galleries (Custom Playlists)
                 Section {
                     ForEach(galleries) { gallery in
-                        HStack {
-                            Label(gallery.name, systemImage: "sparkles.rectangle.stack")
+                        let matchCount = gallery.matchingTokens(from: tokens, artistDisplayName: { artistDisplayName(for: $0) }).count
+                        HStack(spacing: 6) {
+                            Label(gallery.name, systemImage: gallery.isSmart ? "wand.and.stars" : "sparkles.rectangle.stack")
+                                .lineLimit(1)
                             Spacer()
+                            if gallery.isSmart {
+                                Text("SMART")
+                                    .font(.system(size: 7, weight: .black))
+                                    .padding(.horizontal, 4)
+                                    .padding(.vertical, 1)
+                                    .background(Color.purple.opacity(0.18))
+                                    .foregroundColor(.purple)
+                                    .cornerRadius(3)
+                            }
                             if gallery.isActiveForRotation {
                                 Circle()
                                     .fill(Color.green)
                                     .frame(width: 7, height: 7)
                                     .help("Active rotation gallery")
                             }
-                            Text("\(gallery.tokenIds.count)")
+                            Text("\(matchCount)")
                                 .font(.caption2)
                                 .foregroundColor(.secondary)
                         }
@@ -1097,7 +1108,29 @@ public struct LibraryView: View {
     private func saveCurrentScopeAsGallery() {
         tokensToAddToNewGallery = displayedTokens.map(\.id)
         newGalleryName = currentScopeTitle
-        newGalleryDesc = "Created from \(currentScopeTitle) with \(tokensToAddToNewGallery.count) artworks"
+
+        var crit = GalleryFilterCriteria()
+        if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            crit.searchText = searchText
+        }
+        if selectedFormatFilter != .all {
+            crit.formatFilter = selectedFormatFilter.rawValue
+        }
+        switch selectedSidebarItem {
+        case .owned:
+            crit.sourceScope = "owned"
+        case .created:
+            crit.sourceScope = "created"
+        case .collection(let contract):
+            crit.collectionKey = contract
+        default:
+            break
+        }
+
+        let hasActiveRules = (crit.searchText != nil || crit.formatFilter != nil || crit.collectionKey != nil || crit.sourceScope != nil)
+        newGalleryCriteria = hasActiveRules ? crit : nil
+        newGalleryType = hasActiveRules ? .smart : .manual
+        newGalleryDesc = hasActiveRules ? "Dynamic smart gallery matching \(currentScopeTitle) filters" : "Curated gallery with \(tokensToAddToNewGallery.count) artworks"
         isNewGallerySheetPresented = true
     }
 
@@ -1428,8 +1461,79 @@ public struct LibraryView: View {
 
     private var newGallerySheet: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("New desKTop Gallery")
-                .font(.headline)
+            HStack {
+                Text("New desKTop Gallery")
+                    .font(.headline)
+                Spacer()
+                if newGalleryType == .smart {
+                    Text("SMART PLAYLIST")
+                        .font(.system(size: 8, weight: .black))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.purple.opacity(0.18))
+                        .foregroundColor(.purple)
+                        .cornerRadius(4)
+                }
+            }
+
+            // Mode Selector: Smart Rule-Based vs Curated Hand-Picked
+            if newGalleryCriteria != nil {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Gallery Type")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Picker("Gallery Mode", selection: $newGalleryType) {
+                        Text("Smart Gallery (Dynamic Rules)").tag(GalleryType.smart)
+                        Text("Curated Gallery (Hand-Picked)").tag(GalleryType.manual)
+                    }
+                    .pickerStyle(.segmented)
+
+                    if newGalleryType == .smart {
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "wand.and.stars")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(.purple)
+                                Text("Dynamic Rule Criteria")
+                                    .font(.caption)
+                                    .fontWeight(.bold)
+                                    .foregroundColor(.purple)
+                            }
+                            if let q = newGalleryCriteria?.searchText, !q.isEmpty {
+                                Text("• Search query: \"\(q)\"").font(.caption2).foregroundColor(.secondary)
+                            }
+                            if let f = newGalleryCriteria?.formatFilter, !f.isEmpty {
+                                Text("• Format filter: \(f)").font(.caption2).foregroundColor(.secondary)
+                            }
+                            if let c = newGalleryCriteria?.collectionKey, !c.isEmpty {
+                                Text("• Collection: \(resolvedName(for: c))").font(.caption2).foregroundColor(.secondary)
+                            }
+                            if let s = newGalleryCriteria?.sourceScope, !s.isEmpty {
+                                Text("• Scope: \(s.capitalized)").font(.caption2).foregroundColor(.secondary)
+                            }
+                            Text("Automatically includes matching pieces now and on all future library syncs.")
+                                .font(.caption2)
+                                .foregroundColor(.secondary.opacity(0.8))
+                                .padding(.top, 2)
+                        }
+                        .padding(8)
+                        .background(Color.purple.opacity(0.08))
+                        .cornerRadius(6)
+                    } else {
+                        HStack(spacing: 6) {
+                            Image(systemName: "hand.tap")
+                                .font(.system(size: 11))
+                                .foregroundColor(.secondary)
+                            Text("Pins the \(tokensToAddToNewGallery.count) artworks currently visible. You can add or remove pieces by hand.")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(8)
+                        .background(Color.secondary.opacity(0.06))
+                        .cornerRadius(6)
+                    }
+                }
+            }
 
             VStack(alignment: .leading, spacing: 4) {
                 Text("Gallery Name")
@@ -1458,13 +1562,21 @@ public struct LibraryView: View {
                     let name = newGalleryName.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !name.isEmpty else { return }
                     Task {
-                        let g = try? await repository.createGallery(name: name, description: newGalleryDesc.isEmpty ? nil : newGalleryDesc)
-                        if let g = g, !tokensToAddToNewGallery.isEmpty {
-                            for tid in tokensToAddToNewGallery {
-                                try? await repository.addTokenToGallery(tokenId: tid, galleryId: g.id)
-                            }
+                        if newGalleryType == .smart, let crit = newGalleryCriteria {
+                            _ = try? await repository.createSmartGallery(
+                                name: name,
+                                description: newGalleryDesc.isEmpty ? nil : newGalleryDesc,
+                                criteria: crit
+                            )
+                        } else {
+                            _ = try? await repository.createManualGallery(
+                                name: name,
+                                description: newGalleryDesc.isEmpty ? nil : newGalleryDesc,
+                                tokenIds: tokensToAddToNewGallery
+                            )
                         }
                         tokensToAddToNewGallery = []
+                        newGalleryCriteria = nil
                         await reloadData()
                         isNewGallerySheetPresented = false
                     }
@@ -1693,23 +1805,42 @@ struct CollectionCardView: View {
                         HStack(spacing: 2) {
                             if gridTokens.indices.contains(0) {
                                 ArtworkThumbnailView(token: gridTokens[0], contentMode: .fill)
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                                     .clipped()
+                            } else {
+                                Color.secondary.opacity(0.08)
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                             }
                             if gridTokens.indices.contains(1) {
                                 ArtworkThumbnailView(token: gridTokens[1], contentMode: .fill)
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                                     .clipped()
+                            } else {
+                                Color.secondary.opacity(0.08)
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                             }
                         }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+
                         HStack(spacing: 2) {
                             if gridTokens.indices.contains(2) {
                                 ArtworkThumbnailView(token: gridTokens[2], contentMode: .fill)
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                                     .clipped()
+                            } else {
+                                Color.secondary.opacity(0.08)
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                             }
                             if gridTokens.indices.contains(3) {
                                 ArtworkThumbnailView(token: gridTokens[3], contentMode: .fill)
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                                     .clipped()
+                            } else {
+                                Color.secondary.opacity(0.08)
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                             }
                         }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
                 }
 
@@ -1874,7 +2005,7 @@ struct TokenCardView: View {
                     }
 
                     // Bottom Right Category Badge
-                    Text(token.mediaCategory.rawValue.capitalized)
+                    Text(token.mediaCategory.displayName)
                         .font(.system(size: 9, weight: .bold))
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
@@ -2156,6 +2287,99 @@ public struct AnimatedGIFView: View {
     }
 }
 
+// MARK: - Fast Off-Thread Cached Thumbnail Loader
+
+public struct CachedThumbnailImageView: View {
+    let url: URL
+    let contentMode: ContentMode
+    let placeholder: AnyView
+
+    @State private var loadedImage: NSImage?
+    @State private var isLoading: Bool = false
+    @State private var hasFailed: Bool = false
+
+    public init<P: View>(url: URL, contentMode: ContentMode = .fill, placeholder: P) {
+        self.url = url
+        self.contentMode = contentMode
+        self.placeholder = AnyView(placeholder)
+    }
+
+    public var body: some View {
+        ZStack {
+            if let image = loadedImage {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: contentMode)
+                    .clipped()
+            } else if isLoading {
+                ZStack {
+                    Color.secondary.opacity(0.08)
+                    ProgressView()
+                        .controlSize(.small)
+                }
+            } else if hasFailed {
+                placeholder
+            } else {
+                Color.secondary.opacity(0.08)
+            }
+        }
+        .task(id: url) {
+            await loadImage()
+        }
+    }
+
+    private func loadImage() async {
+        let nsURL = url as NSURL
+        if let cached = ImageMemoryCache.shared.object(forKey: nsURL) {
+            self.loadedImage = cached
+            return
+        }
+
+        isLoading = true
+        hasFailed = false
+
+        do {
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 12.0
+            request.setValue("desKTop/1.0", forHTTPHeaderField: "User-Agent")
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+                self.hasFailed = true
+                self.isLoading = false
+                return
+            }
+
+            // Downsample and decode frame 0 off the main thread in a detached cooperative task
+            let decoded: NSImage? = await Task.detached(priority: .userInitiated) {
+                guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
+                    return NSImage(data: data)
+                }
+                let options: [CFString: Any] = [
+                    kCGImageSourceCreateThumbnailFromImageAlways: true,
+                    kCGImageSourceShouldCacheImmediately: true,
+                    kCGImageSourceCreateThumbnailWithTransform: true,
+                    kCGImageSourceThumbnailMaxPixelSize: 600
+                ]
+                if let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) {
+                    return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+                }
+                return NSImage(data: data)
+            }.value
+
+            if let img = decoded {
+                ImageMemoryCache.shared.setObject(img, forKey: nsURL)
+                self.loadedImage = img
+            } else {
+                self.hasFailed = true
+            }
+            self.isLoading = false
+        } catch {
+            self.hasFailed = true
+            self.isLoading = false
+        }
+    }
+}
+
 // MARK: - Artwork Thumbnail Loader
 
 public struct ArtworkThumbnailView: View {
@@ -2172,36 +2396,18 @@ public struct ArtworkThumbnailView: View {
     }
 
     private var targetURL: URL? {
-        let uri = token.thumbnailUri ?? token.displayUri ?? token.artifactUri
+        let uri = token.preferredThumbnailUri
         guard let uri = uri else { return nil }
         return IPFSGatewayManager.resolvePublicURL(for: uri)
     }
 
     public var body: some View {
-        if token.mediaCategory == .animatedImage, let url = targetURL {
-            AnimatedGIFView(url: url, contentMode: contentMode, animates: shouldAnimate || isHovered)
+        if token.mediaCategory == .animatedImage, (shouldAnimate || isHovered), let url = targetURL {
+            AnimatedGIFView(url: url, contentMode: contentMode, animates: true)
                 .clipped()
         } else if let url = targetURL {
-            AsyncImage(url: url) { phase in
-                switch phase {
-                case .empty:
-                    ZStack {
-                        Color.secondary.opacity(0.08)
-                        ProgressView()
-                            .controlSize(.small)
-                    }
-                case .success(let image):
-                    image
-                        .resizable()
-                        .aspectRatio(contentMode: contentMode)
-                        .clipped()
-                case .failure:
-                    placeholderView
-                @unknown default:
-                    placeholderView
-                }
-            }
-            .clipped()
+            CachedThumbnailImageView(url: url, contentMode: contentMode, placeholder: placeholderView)
+                .clipped()
         } else {
             placeholderView
         }
@@ -2679,7 +2885,7 @@ struct TokenInspectorView: View {
                     if let rights = rightsText {
                         DetailRow(label: "Rights / License", value: rights)
                     }
-                    DetailRow(label: "Format Category", value: token.mediaCategory.rawValue.capitalized)
+                    DetailRow(label: "Format Category", value: token.mediaCategory.displayName)
                     if let mime = token.mimeType {
                         DetailRow(label: "MIME Type", value: mime)
                     }

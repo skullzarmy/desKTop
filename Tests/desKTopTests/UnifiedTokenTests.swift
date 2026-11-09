@@ -81,5 +81,35 @@ public struct UnifiedTokenTests {
             name: "Sample"
         )
         try assertEqual(token.id, "KT1RJ6PbjHpwc3M5rw5s2Nbmefwbuwbdxton_789")
+
+        // Hermandad de los Fracasados (formats has display.webp first, but artifact.gif in formats)
+        let hermandadToken = UnifiedToken(
+            contract: "KT1VHoxXoYX9LYEKe1AjPHaRq3zPZ4cZd6my",
+            tokenId: "10632",
+            name: "Hermandad de los Fracasados",
+            artifactUri: "ipfs://bafybeietwsvimdp6fzkm4zks77rmx24trxbfbjb3af4szn4d4voy2ncmtq",
+            displayUri: "ipfs://bafybeia6pazj37yodz7w74e6lm6gj2mklrarsuv2wcnwrarlkhfvdctuje",
+            thumbnailUri: "ipfs://bafybeie7tx7ru6wjv6sshdyiru3ebsolsp3svj27tcxc7jhnos3x4u3k24",
+            formats: [
+                TokenFormat(uri: "ipfs://bafybeia6pazj37yodz7w74e6lm6gj2mklrarsuv2wcnwrarlkhfvdctuje", mimeType: "image/webp"),
+                TokenFormat(uri: "ipfs://bafybeie7tx7ru6wjv6sshdyiru3ebsolsp3svj27tcxc7jhnos3x4u3k24", mimeType: "image/webp"),
+                TokenFormat(uri: "ipfs://bafybeietwsvimdp6fzkm4zks77rmx24trxbfbjb3af4szn4d4voy2ncmtq", mimeType: "image/gif")
+            ],
+            rawMetadata: ["tags": "skull,darkart,gif,glitch"]
+        )
+        try assertEqual(hermandadToken.mediaCategory, .animatedImage)
+        try assertEqual(hermandadToken.mediaCategory.displayName, "GIF")
+
+        // Non-visual metadata rejection (avoid loading json or markdown as wallpaper)
+        let textArticleToken = UnifiedToken(
+            contract: "KT1test",
+            tokenId: "99",
+            name: "Guide to AI",
+            artifactUri: "ipfs://QmArticle/metadata.json",
+            displayUri: "ipfs://QmCoverArt.jpg",
+            thumbnailUri: "ipfs://QmThumb.jpg"
+        )
+        try assertEqual(textArticleToken.primaryWallpaperUri, "ipfs://QmCoverArt.jpg")
+        try assertEqual(textArticleToken.preferredThumbnailUri, "ipfs://QmThumb.jpg")
     }
 }

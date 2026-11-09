@@ -333,6 +333,20 @@ public actor WalletRepository {
         return gallery
     }
 
+    public func createSmartGallery(name: String, description: String? = nil, criteria: GalleryFilterCriteria) async throws -> DesktopGallery {
+        let gallery = DesktopGallery(name: name, description: description, type: .smart, tokenIds: [], criteria: criteria)
+        state.galleries.append(gallery)
+        try persist()
+        return gallery
+    }
+
+    public func createManualGallery(name: String, description: String? = nil, tokenIds: [String]) async throws -> DesktopGallery {
+        let gallery = DesktopGallery(name: name, description: description, type: .manual, tokenIds: tokenIds, criteria: nil)
+        state.galleries.append(gallery)
+        try persist()
+        return gallery
+    }
+
     public func updateGallery(_ gallery: DesktopGallery) async throws {
         if let idx = state.galleries.firstIndex(where: { $0.id == gallery.id }) {
             var g = gallery
@@ -459,11 +473,10 @@ public actor WalletRepository {
             }
             return matching.isEmpty ? state.tokens : matching
         case .customGallery(let gid, _):
-            guard let g = state.galleries.first(where: { $0.id == gid }), !g.tokenIds.isEmpty else {
+            guard let g = state.galleries.first(where: { $0.id == gid }) else {
                 return state.tokens
             }
-            let activeSet = Set(g.tokenIds)
-            let matched = state.tokens.filter { activeSet.contains($0.id) }
+            let matched = g.matchingTokens(from: state.tokens)
             return matched.isEmpty ? state.tokens : matched
         case .objktCuration(let cid, _):
             let matched = state.tokens.filter { $0.rawMetadata?["curationId"] == cid }
