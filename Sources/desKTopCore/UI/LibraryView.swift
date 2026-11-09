@@ -82,6 +82,7 @@ public struct LibraryView: View {
     @State private var galleries: [DesktopGallery] = []
     @State private var objktCurations: [ObjktGallerySummary] = []
     @State private var collectionNames: [String: String] = [:]
+    @State private var artistProfiles: [String: ArtistProfile] = [:]
 
     @State private var selectedSidebarItem: LibrarySidebarItem = .allArt
     @State private var selectedToken: UnifiedToken?
@@ -128,6 +129,20 @@ public struct LibraryView: View {
     }
 
     // MARK: - Helpers
+
+    public func artistDisplayName(for addressOrName: String) -> String {
+        let trimmed = addressOrName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let profile = artistProfiles[trimmed] ?? artistProfiles[trimmed.lowercased()] {
+            return profile.displayName
+        }
+        guard trimmed.count > 10 else { return trimmed }
+        return String(trimmed.prefix(6)) + "…" + String(trimmed.suffix(4))
+    }
+
+    public func artistProfile(for addressOrName: String) -> ArtistProfile? {
+        let trimmed = addressOrName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return artistProfiles[trimmed] ?? artistProfiles[trimmed.lowercased()]
+    }
 
     private func isTokenCreatedByUser(_ token: UnifiedToken) -> Bool {
         if token.isCreated { return true }
@@ -179,7 +194,12 @@ public struct LibraryView: View {
         if !searchText.isEmpty {
             baseTokens = baseTokens.filter { token in
                 token.name.localizedCaseInsensitiveContains(searchText) ||
-                token.creators.contains(where: { $0.localizedCaseInsensitiveContains(searchText) }) ||
+                token.creators.contains(where: { creator in
+                    creator.localizedCaseInsensitiveContains(searchText) ||
+                    artistDisplayName(for: creator).localizedCaseInsensitiveContains(searchText) ||
+                    (artistProfile(for: creator)?.tzdomain?.localizedCaseInsensitiveContains(searchText) ?? false) ||
+                    (artistProfile(for: creator)?.twitterHandle?.localizedCaseInsensitiveContains(searchText) ?? false)
+                }) ||
                 token.contract.localizedCaseInsensitiveContains(searchText) ||
                 (resolvedName(for: token.contract).localizedCaseInsensitiveContains(searchText)) ||
                 token.tokenId.contains(searchText)
@@ -484,13 +504,25 @@ public struct LibraryView: View {
                     TokenInspectorView(
                         token: token,
                         collectionName: resolvedName(for: token.contract),
+                        collectionTokensCount: tokens.filter { $0.contract.caseInsensitiveCompare(token.contract) == .orderedSame }.count,
+                        artistProfile: token.creators.first.flatMap { artistProfile(for: $0) },
+                        artistDisplayName: token.creators.first.map { artistDisplayName(for: $0) } ?? (token.creators.first ?? "Unknown"),
                         isLiveOnDesktop: currentWallpaperTokenId == token.tokenId,
+                        isCollectionRotating: {
+                            if case .collection(let activeContract, _) = activeRotationTarget {
+                                return activeContract.caseInsensitiveCompare(token.contract) == .orderedSame
+                            }
+                            return false
+                        }(),
                         galleries: galleries,
                         matteMode: $matteMode,
                         customHex: $customHex,
                         onSetWallpaper: {
                             currentWallpaperTokenId = token.tokenId
                             onSetWallpaper(token)
+                        },
+                        onRotateCollection: {
+                            startRotatingCurrentScope(.collection(contract: token.contract, displayName: resolvedName(for: token.contract)))
                         },
                         onAddToGallery: { gid in
                             Task {
@@ -597,6 +629,7 @@ public struct LibraryView: View {
                             TokenCardView(
                                 token: token,
                                 collectionName: resolvedName(for: token.contract),
+                                artistName: token.creators.first.map { artistDisplayName(for: $0) } ?? "",
                                 isSelected: selectedToken?.id == token.id,
                                 isLiveOnDesktop: currentWallpaperTokenId == token.tokenId,
                                 galleries: galleries,
@@ -1237,6 +1270,7 @@ public struct LibraryView: View {
         let intervalSec = await repository.getRotationInterval()
         self.rotationInterval = RotationInterval(rawValue: intervalSec) ?? .fiveMinutes
         resolveTopCollections()
+        resolveArtists()
     }
 
     private func resolveTopCollections() {
@@ -1246,6 +1280,17 @@ public struct LibraryView: View {
             let names = await CollectionResolver.shared.resolveNames(for: contracts)
             await MainActor.run {
                 self.collectionNames.merge(names) { _, new in new }
+            }
+        }
+    }
+
+    private func resolveArtists() {
+        let creators = Array(Set(tokens.flatMap(\.creators)))
+        guard !creators.isEmpty else { return }
+        Task {
+            let resolved = await ArtistResolver.shared.resolveArtists(for: creators)
+            await MainActor.run {
+                self.artistProfiles.merge(resolved) { _, new in new }
             }
         }
     }
@@ -1461,6 +1506,7 @@ struct CollectionCardView: View {
 struct TokenCardView: View {
     let token: UnifiedToken
     let collectionName: String
+    let artistName: String
     let isSelected: Bool
     let isLiveOnDesktop: Bool
     let galleries: [DesktopGallery]
@@ -1541,21 +1587,33 @@ struct TokenCardView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(token.name)
                     .font(.subheadline)
-                    .fontWeight(.medium)
+                    .fontWeight(.semibold)
                     .lineLimit(1)
+
+                if !artistName.isEmpty {
+                    Text("by \(artistName)")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
 
                 // Clickable collection pill
                 Button(action: {
                     onFilterByCollection(token.contract)
                 }) {
-                    Text(collectionName)
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundColor(.accentColor)
-                        .lineLimit(1)
+                    HStack(spacing: 3) {
+                        Image(systemName: "folder")
+                            .font(.system(size: 9))
+                        Text(collectionName)
+                            .font(.system(size: 10))
+                            .lineLimit(1)
+                    }
+                    .foregroundColor(.secondary.opacity(0.8))
                 }
                 .buttonStyle(.plain)
-                .help("Filter to all artworks from '\(collectionName)'")
+                .help("Filter library to \(collectionName)")
             }
+            .padding(.horizontal, 2)
         }
         .padding(8)
         .background(isSelected ? Color.accentColor.opacity(0.12) : Color.clear)
@@ -1638,14 +1696,9 @@ final class NonExpandingImageView: NSImageView {
     }
 }
 
-public struct AnimatedGIFView: NSViewRepresentable {
-    let url: URL?
+public struct AppKitGIFRepresentable: NSViewRepresentable {
+    let image: NSImage
     let contentMode: ContentMode
-
-    public init(url: URL?, contentMode: ContentMode = .fill) {
-        self.url = url
-        self.contentMode = contentMode
-    }
 
     public func makeNSView(context: Context) -> NSImageView {
         let view = NonExpandingImageView()
@@ -1658,6 +1711,7 @@ public struct AnimatedGIFView: NSViewRepresentable {
         view.setContentHuggingPriority(.defaultLow, for: .vertical)
         view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         view.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
+        view.image = image
         return view
     }
 
@@ -1668,37 +1722,88 @@ public struct AnimatedGIFView: NSViewRepresentable {
     }
 
     public func updateNSView(_ nsView: NSImageView, context: Context) {
-        nsView.imageScaling = .scaleProportionallyUpOrDown
-        nsView.animates = true
-        nsView.wantsLayer = true
-        nsView.layer?.masksToBounds = true
+        if nsView.image !== image {
+            nsView.image = image
+            nsView.animates = true
+        }
+    }
+}
+
+public struct AnimatedGIFView: View {
+    let url: URL?
+    let contentMode: ContentMode
+
+    @State private var image: NSImage?
+    @State private var isLoading: Bool = false
+    @State private var hasFailed: Bool = false
+
+    public init(url: URL?, contentMode: ContentMode = .fill) {
+        self.url = url
+        self.contentMode = contentMode
+    }
+
+    public var body: some View {
+        ZStack {
+            if let image = image {
+                AppKitGIFRepresentable(image: image, contentMode: contentMode)
+            } else if isLoading {
+                ZStack {
+                    Color.secondary.opacity(0.08)
+                    ProgressView()
+                        .controlSize(.small)
+                }
+            } else if hasFailed {
+                ZStack {
+                    Color.secondary.opacity(0.12)
+                    VStack(spacing: 4) {
+                        Image(systemName: "photo.badge.exclamationmark")
+                            .font(.system(size: 20))
+                            .foregroundColor(.secondary)
+                        Text("GIF")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundColor(.secondary)
+                    }
+                }
+            } else {
+                Color.secondary.opacity(0.08)
+            }
+        }
+        .task(id: url) {
+            await loadImage()
+        }
+    }
+
+    private func loadImage() async {
         guard let url = url else {
-            nsView.image = nil
+            hasFailed = true
             return
         }
 
-        if nsView.tag != url.hashValue {
-            nsView.tag = url.hashValue
-            if let cached = ImageMemoryCache.shared.object(forKey: url as NSURL) {
-                nsView.image = cached
-                nsView.animates = true
-                nsView.needsDisplay = true
-                return
-            }
+        if let cached = ImageMemoryCache.shared.object(forKey: url as NSURL) {
+            self.image = cached
+            return
+        }
 
-            Task.detached(priority: .userInitiated) {
-                if let (data, _) = try? await URLSession.shared.data(from: url),
-                   let img = NSImage(data: data) {
-                    ImageMemoryCache.shared.setObject(img, forKey: url as NSURL)
-                    await MainActor.run {
-                        if nsView.tag == url.hashValue {
-                            nsView.image = img
-                            nsView.animates = true
-                            nsView.needsDisplay = true
-                        }
-                    }
-                }
+        isLoading = true
+        hasFailed = false
+
+        do {
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 15.0
+            request.setValue("desKTop/1.0", forHTTPHeaderField: "User-Agent")
+            let (data, response) = try await URLSession.shared.data(for: request)
+            if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
+               let img = NSImage(data: data) {
+                ImageMemoryCache.shared.setObject(img, forKey: url as NSURL)
+                self.image = img
+                self.isLoading = false
+            } else {
+                self.hasFailed = true
+                self.isLoading = false
             }
+        } catch {
+            self.hasFailed = true
+            self.isLoading = false
         }
     }
 }
@@ -1778,13 +1883,65 @@ public struct ArtworkThumbnailView: View {
 struct TokenInspectorView: View {
     let token: UnifiedToken
     let collectionName: String
+    let collectionTokensCount: Int
+    let artistProfile: ArtistProfile?
+    let artistDisplayName: String
     let isLiveOnDesktop: Bool
+    let isCollectionRotating: Bool
     let galleries: [DesktopGallery]
     @Binding var matteMode: WallpaperMatteMode
     @Binding var customHex: String
     let onSetWallpaper: () -> Void
+    let onRotateCollection: () -> Void
     let onAddToGallery: (UUID) -> Void
     let onFilterByCollection: (String) -> Void
+
+    private var formattedMintDate: String? {
+        guard let dateStr = token.rawMetadata?["date"], !dateStr.isEmpty else { return nil }
+        let isoFormatter = ISO8601DateFormatter()
+        isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = isoFormatter.date(from: dateStr) {
+            let df = DateFormatter()
+            df.dateStyle = .medium
+            df.timeStyle = .none
+            return df.string(from: date)
+        }
+        let fallbackIso = ISO8601DateFormatter()
+        if let date = fallbackIso.date(from: dateStr) {
+            let df = DateFormatter()
+            df.dateStyle = .medium
+            df.timeStyle = .none
+            return df.string(from: date)
+        }
+        if dateStr.count >= 10 {
+            return String(dateStr.prefix(10))
+        }
+        return dateStr
+    }
+
+    private var editionText: String? {
+        if let supply = token.supply {
+            if supply == 1 {
+                return "1/1 (Unique)"
+            }
+            return "\(supply) editions"
+        }
+        return nil
+    }
+
+    private var rightsText: String? {
+        if let rights = token.rawMetadata?["rights"], !rights.isEmpty {
+            return rights
+        }
+        return nil
+    }
+
+    private var mintingToolText: String? {
+        if let tool = token.rawMetadata?["mintingTool"], !tool.isEmpty {
+            return tool.replacingOccurrences(of: "https://", with: "")
+        }
+        return nil
+    }
 
     var body: some View {
         ScrollView {
@@ -1795,45 +1952,172 @@ struct TokenInspectorView: View {
                     .background(Color.black.opacity(0.15))
                     .cornerRadius(8)
 
-                // Title & Artists
-                VStack(alignment: .leading, spacing: 4) {
+                // Title
+                VStack(alignment: .leading, spacing: 2) {
                     Text(token.name)
                         .font(.title2)
                         .fontWeight(.bold)
-
-                    if !token.creators.isEmpty {
-                        Text("by \(token.creators.joined(separator: ", "))")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                    }
                 }
 
-                // Interactive Collection Link
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Collection")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
+                // Verified Artist Identity Card
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        ZStack {
+                            Circle()
+                                .fill(Color.accentColor.opacity(0.15))
+                                .frame(width: 32, height: 32)
+                            Text(String(artistDisplayName.prefix(1)).uppercased())
+                                .font(.system(size: 14, weight: .bold))
+                                .foregroundColor(.accentColor)
+                        }
 
-                    Button(action: {
-                        onFilterByCollection(token.contract)
-                    }) {
-                        HStack(spacing: 5) {
-                            Image(systemName: "rectangle.stack.fill")
-                                .foregroundColor(.accentColor)
-                                .font(.caption)
-                            Text(collectionName)
-                                .font(.subheadline)
-                                .fontWeight(.semibold)
-                                .foregroundColor(.accentColor)
-                                .lineLimit(1)
-                            Image(systemName: "arrow.right.circle")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
+                        VStack(alignment: .leading, spacing: 1) {
+                            HStack(spacing: 4) {
+                                Text(artistDisplayName)
+                                    .font(.headline)
+                                    .fontWeight(.bold)
+                                    .lineLimit(1)
+                                if artistProfile?.alias != nil || artistProfile?.tzdomain != nil {
+                                    Image(systemName: "checkmark.seal.fill")
+                                        .font(.system(size: 11))
+                                        .foregroundColor(.accentColor)
+                                }
+                            }
+
+                            if let tzdomain = artistProfile?.tzdomain {
+                                Text(tzdomain)
+                                    .font(.caption2)
+                                    .foregroundColor(.accentColor)
+                            } else if let addr = token.creators.first {
+                                Text(String(addr.prefix(6)) + "…" + String(addr.suffix(4)))
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        Spacer()
+                    }
+
+                    // Social & Profile Links
+                    HStack(spacing: 6) {
+                        if let twitterHandle = artistProfile?.twitterHandle, let twitterURL = artistProfile?.twitterURL {
+                            Button(action: { NSWorkspace.shared.open(twitterURL) }) {
+                                HStack(spacing: 3) {
+                                    Image(systemName: "bubble.left.fill")
+                                        .font(.system(size: 9))
+                                    Text(twitterHandle)
+                                        .font(.system(size: 10, weight: .semibold))
+                                }
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 3)
+                                .background(Color.secondary.opacity(0.10))
+                                .cornerRadius(5)
+                            }
+                            .buttonStyle(.plain)
+                        }
+
+                        if let websiteURL = artistProfile?.websiteURL {
+                            Button(action: { NSWorkspace.shared.open(websiteURL) }) {
+                                HStack(spacing: 3) {
+                                    Image(systemName: "globe")
+                                        .font(.system(size: 9))
+                                    Text("Website")
+                                        .font(.system(size: 10, weight: .semibold))
+                                }
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 3)
+                                .background(Color.secondary.opacity(0.10))
+                                .cornerRadius(5)
+                            }
+                            .buttonStyle(.plain)
+                        }
+
+                        if let objktURL = artistProfile?.objktProfileURL {
+                            Button(action: { NSWorkspace.shared.open(objktURL) }) {
+                                HStack(spacing: 3) {
+                                    Image(systemName: "sparkles")
+                                        .font(.system(size: 9))
+                                    Text("objkt")
+                                        .font(.system(size: 10, weight: .semibold))
+                                }
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 3)
+                                .background(Color.secondary.opacity(0.10))
+                                .cornerRadius(5)
+                            }
+                            .buttonStyle(.plain)
+                        }
+
+                        if let tzktURL = artistProfile?.tzktProfileURL {
+                            Button(action: { NSWorkspace.shared.open(tzktURL) }) {
+                                HStack(spacing: 3) {
+                                    Image(systemName: "magnifyingglass")
+                                        .font(.system(size: 9))
+                                    Text("TzKT")
+                                        .font(.system(size: 10, weight: .semibold))
+                                }
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 3)
+                                .background(Color.secondary.opacity(0.10))
+                                .cornerRadius(5)
+                            }
+                            .buttonStyle(.plain)
                         }
                     }
-                    .buttonStyle(.plain)
-                    .help("Filter library to all artworks in '\(collectionName)'")
+
+                    if let desc = artistProfile?.description, !desc.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Text(desc.trimmingCharacters(in: .whitespacesAndNewlines))
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .lineLimit(3)
+                            .padding(8)
+                            .background(Color.secondary.opacity(0.06))
+                            .cornerRadius(6)
+                    }
                 }
+                .padding(10)
+                .background(Color.secondary.opacity(0.06))
+                .cornerRadius(8)
+
+                // Collection & 1-Click Desktop Rotation
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Image(systemName: "folder.fill")
+                            .foregroundColor(.accentColor)
+                        Text(collectionName)
+                            .font(.headline)
+                            .lineLimit(1)
+                        Spacer()
+                        Text("\(collectionTokensCount) artworks")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+
+                    Button(action: onRotateCollection) {
+                        HStack(spacing: 6) {
+                            Image(systemName: isCollectionRotating ? "checkmark.circle.fill" : "play.fill")
+                            Text(isCollectionRotating ? "Rotating Collection on Desktop" : "Rotate Collection on Desktop")
+                                .fontWeight(.semibold)
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(isCollectionRotating ? Color.green : Color.accentColor)
+                    .controlSize(.regular)
+
+                    Button(action: { onFilterByCollection(token.contract) }) {
+                        HStack(spacing: 4) {
+                            Text("Browse all \(collectionTokensCount) artworks")
+                            Image(systemName: "arrow.right")
+                        }
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(10)
+                .background(Color.secondary.opacity(0.06))
+                .cornerRadius(8)
 
                 // Primary Set Desktop Action
                 Button(action: onSetWallpaper) {
@@ -1920,51 +2204,65 @@ struct TokenInspectorView: View {
                     .buttonStyle(.link)
                 }
 
-                if let desc = token.description, !desc.isEmpty {
+                if let desc = token.description, !desc.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Description")
                             .font(.headline)
-                        Text(desc)
+                        Text(desc.trimmingCharacters(in: .whitespacesAndNewlines))
                             .font(.body)
                             .foregroundColor(.secondary)
+                            .textSelection(.enabled)
                     }
                 }
 
                 Divider()
 
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Token Details")
+                    Text("Artwork Provenance")
                         .font(.headline)
 
-                    DetailRow(label: "Collection Contract", value: token.contract)
-                    DetailRow(label: "Token ID", value: token.tokenId)
-                    DetailRow(label: "Format Category", value: token.mediaCategory.rawValue.capitalized)
-                    if let supply = token.supply {
-                        DetailRow(label: "Edition Supply", value: "\(supply)")
+                    if let ed = editionText {
+                        DetailRow(label: "Editions / Supply", value: ed)
                     }
+                    if let mintDate = formattedMintDate {
+                        DetailRow(label: "Mint Date", value: mintDate)
+                    }
+                    if let tool = mintingToolText {
+                        DetailRow(label: "Minting Tool", value: tool)
+                    }
+                    if let rights = rightsText {
+                        DetailRow(label: "Rights / License", value: rights)
+                    }
+                    DetailRow(label: "Format Category", value: token.mediaCategory.rawValue.capitalized)
                     if let mime = token.mimeType {
                         DetailRow(label: "MIME Type", value: mime)
                     }
-                    if let uri = token.artifactUri {
-                        DetailRow(label: "Artifact URI", value: uri)
-                    }
+                    DetailRow(label: "Token ID", value: "#\(token.tokenId)")
+                    DetailRow(label: "Collection Contract", value: token.contract)
                 }
 
                 if !token.attributes.isEmpty {
                     Divider()
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Attributes & Traits")
+                        Text("Attributes & Traits (\(token.attributes.count))")
                             .font(.headline)
 
-                        ForEach(token.attributes, id: \.name) { attr in
-                            HStack {
-                                Text(attr.name)
-                                    .foregroundColor(.secondary)
-                                Spacer()
-                                Text(attr.value)
-                                    .fontWeight(.medium)
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 110), spacing: 6)], spacing: 6) {
+                            ForEach(token.attributes, id: \.name) { attr in
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(attr.name.uppercased())
+                                        .font(.system(size: 8, weight: .bold))
+                                        .foregroundColor(.secondary)
+                                    Text(attr.value)
+                                        .font(.system(size: 11, weight: .semibold))
+                                        .lineLimit(1)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 5)
+                                .background(Color.secondary.opacity(0.08))
+                                .cornerRadius(6)
                             }
-                            .font(.caption)
                         }
                     }
                 }

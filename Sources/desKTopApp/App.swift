@@ -48,6 +48,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var nextWallpaperObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Configure global URLCache with 100 MB memory and 1 GB disk cache for high-speed artwork & GIF caching
+        let memoryCapacity = 100 * 1024 * 1024
+        let diskCapacity = 1024 * 1024 * 1024
+        URLCache.shared = URLCache(memoryCapacity: memoryCapacity, diskCapacity: diskCapacity, diskPath: "desKTop_url_cache")
+
         // Strictly start with .accessory policy: zero presence in Dock or Cmd+Tab
         NSApp.setActivationPolicy(.accessory)
 
