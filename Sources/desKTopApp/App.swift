@@ -47,7 +47,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var rotationScheduler: RotationScheduler?
     private var rotationObserver: NSObjectProtocol?
     private var nextWallpaperObserver: NSObjectProtocol?
+    private var desktopChangeObserver: NSObjectProtocol?
     private var isRotating: Bool = false
+    private var lastAppliedWallpaperURL: URL?
+    private var isExternalWallpaperActive: Bool = false
     private var pendingRotationChangeTask: Task<Void, Never>?
     private var cancellables = Set<AnyCancellable>()
 
@@ -65,11 +68,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             .sink { [weak self] newScaling in
                 UserDefaults.standard.set(newScaling.rawValue, forKey: "wallpaperScaling")
                 Task { @MainActor [weak self] in
-                    guard let self = self, let currentToken = self.viewModel.currentToken else { return }
-                    await self.setTokenAsWallpaper(currentToken)
+                    guard let self = self else { return }
+                    if let currentToken = self.viewModel.currentToken {
+                        await self.setTokenAsWallpaper(currentToken)
+                    } else {
+                        let tokens = await self.repository.getActiveRotationTokens()
+                        if let first = tokens.first {
+                            await self.setTokenAsWallpaper(first)
+                        }
+                    }
                 }
             }
             .store(in: &cancellables)
+
+        // React immediately when user pauses / unpauses in MenuBar UI
+        viewModel.$isPaused
+            .dropFirst()
+            .removeDuplicates()
+            .sink { [weak self] paused in
+                Task { @MainActor [weak self] in
+                    guard let self = self else { return }
+                    try? await self.repository.setRotationPaused(paused)
+                    self.rotationScheduler?.isPaused = paused
+                    if !paused {
+                        await self.syncDesktopState(forceApplyIfExternal: true)
+                    }
+                }
+            }
+            .store(in: &cancellables)
+
+        // Listen for space changes or display changes to re-sync state
+        desktopChangeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                await self?.syncDesktopState(forceApplyIfExternal: false)
+            }
+        }
 
         // Configure global URLCache with 100 MB memory and 1 GB disk cache for high-speed artwork & GIF caching
         let memoryCapacity = 100 * 1024 * 1024
@@ -88,6 +125,96 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         setupStatusItem()
         setupPopover()
         setupRotationScheduler()
+
+        // Sync desktop state on launch immediately: checks repository and system wallpaper
+        Task { @MainActor in
+            let paused = await self.repository.isRotationPaused()
+            self.viewModel.isPaused = paused
+            await self.syncDesktopState(forceApplyIfExternal: true)
+        }
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if let button = statusItem?.button {
+            togglePopover(button)
+        }
+        Task { @MainActor in
+            await self.syncDesktopState(forceApplyIfExternal: false)
+        }
+        return true
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        if let observer = desktopChangeObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+        }
+        for controller in canvasControllers.values {
+            controller.dismiss()
+        }
+        canvasControllers.removeAll()
+    }
+
+    private func handleDesktopImageChangedExternally() {
+        guard let screen = NSScreen.main else { return }
+        let currentSystemURL = NSWorkspace.shared.desktopImageURL(for: screen)
+        if let applied = lastAppliedWallpaperURL, currentSystemURL == applied {
+            isExternalWallpaperActive = false
+            return
+        }
+        if let path = currentSystemURL?.path, path.contains("desKTop/ActiveWallpapers") {
+            lastAppliedWallpaperURL = currentSystemURL
+            isExternalWallpaperActive = false
+            return
+        }
+        isExternalWallpaperActive = true
+        if viewModel.currentToken != nil {
+            viewModel.statusMessage = "External wallpaper active"
+        }
+    }
+
+    private func syncDesktopState(forceApplyIfExternal: Bool) async {
+        let tokens = await repository.getActiveRotationTokens()
+        guard !tokens.isEmpty else {
+            viewModel.statusMessage = "Ready — Add art in Gallery"
+            viewModel.currentToken = nil
+            return
+        }
+
+        let savedTokenId = UserDefaults.standard.string(forKey: "lastActiveTokenId")
+        let tokenToDisplay: UnifiedToken
+        if let savedId = savedTokenId, let found = tokens.first(where: { $0.id == savedId || $0.tokenId == savedId }) {
+            tokenToDisplay = found
+        } else if let current = viewModel.currentToken, tokens.contains(where: { $0.id == current.id }) {
+            tokenToDisplay = current
+        } else {
+            tokenToDisplay = tokens.first!
+        }
+
+        guard let screen = NSScreen.main else { return }
+        let currentSystemURL = NSWorkspace.shared.desktopImageURL(for: screen)
+
+        let isOurWallpaper: Bool
+        if let applied = lastAppliedWallpaperURL {
+            isOurWallpaper = (currentSystemURL == applied)
+        } else if let path = currentSystemURL?.path {
+            isOurWallpaper = path.contains("desKTop/ActiveWallpapers")
+        } else {
+            isOurWallpaper = false
+        }
+
+        if !isOurWallpaper {
+            isExternalWallpaperActive = true
+            if forceApplyIfExternal || viewModel.currentToken == nil {
+                await setTokenAsWallpaper(tokenToDisplay)
+            } else {
+                viewModel.currentToken = tokenToDisplay
+                viewModel.statusMessage = "External wallpaper active"
+            }
+        } else {
+            isExternalWallpaperActive = false
+            viewModel.currentToken = tokenToDisplay
+            viewModel.statusMessage = "Live on \(screen.localizedName)"
+        }
     }
 
     private func setupRotationScheduler() {
@@ -191,6 +318,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         } else {
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
+            Task { @MainActor in
+                await self.syncDesktopState(forceApplyIfExternal: false)
+            }
         }
     }
 
@@ -296,31 +426,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
             switch token.mediaCategory {
             case .animatedImage:
-                // Animate GIF live on desktop canvas behind desktop icons
+                // Hardware-accelerated WebKit canvas for animated GIFs / WebP: 0% runaway CPU
                 let controller = canvasControllers[displayUUID] ?? DesktopCanvasWindowController(screen: screen, displayUUID: displayUUID)
                 canvasControllers[displayUUID] = controller
                 controller.setBackgroundColor(matteColor)
 
-                let imageView = NSImageView(frame: screen.frame)
-                imageView.wantsLayer = true
-                if viewModel.scaling == .fill {
-                    imageView.layer?.contentsGravity = .resizeAspectFill
-                } else if viewModel.scaling == .center {
-                    imageView.layer?.contentsGravity = .center
-                } else {
-                    imageView.layer?.contentsGravity = .resizeAspect
-                }
-                imageView.animates = true
-                imageView.canDrawSubviewsIntoLayer = true
-                if let data = try? Data(contentsOf: fileURL), let img = NSImage(data: data) {
-                    imageView.image = img
-                    imageView.animates = true
-                }
-                controller.setCanvasContent(imageView)
+                let webView = SandboxedArtWebView(tokenDirectory: fileURL.deletingLastPathComponent(), frame: screen.frame)
+                let objectFit = (viewModel.scaling == .fill) ? "cover" : (viewModel.scaling == .center ? "none" : "contain")
+                let bgHex = matteColor.hexString
+                let html = """
+                <!DOCTYPE html>
+                <html>
+                <head>
+                <meta charset="utf-8">
+                <style>
+                * { margin: 0; padding: 0; box-sizing: border-box; }
+                html, body { width: 100vw; height: 100vh; overflow: hidden; background: \(bgHex); display: flex; align-items: center; justify-content: center; }
+                img { width: 100%; height: 100%; object-fit: \(objectFit); }
+                </style>
+                </head>
+                <body>
+                <img src="art://isolated/\(fileURL.lastPathComponent)" />
+                </body>
+                </html>
+                """
+                webView.loadHTML(html)
+                controller.setCanvasContent(webView)
                 controller.present()
 
                 self.viewModel.currentToken = token
                 self.viewModel.statusMessage = "Live on \(screen.localizedName) (Animated GIF)"
+                self.isExternalWallpaperActive = false
+                UserDefaults.standard.set(token.id, forKey: "lastActiveTokenId")
 
             case .video:
                 // Loop video seamlessly on desktop canvas
@@ -334,6 +471,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
                 self.viewModel.currentToken = token
                 self.viewModel.statusMessage = "Live on \(screen.localizedName) (Video Loop)"
+                self.isExternalWallpaperActive = false
+                UserDefaults.standard.set(token.id, forKey: "lastActiveTokenId")
 
             case .fxhash, .aleatory, .bootloader, .editArt, .interactiveHtml:
                 // Run generative WebGL/HTML engine on desktop canvas
@@ -357,6 +496,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
                 self.viewModel.currentToken = token
                 self.viewModel.statusMessage = "Live on \(screen.localizedName) (Generative)"
+                self.isExternalWallpaperActive = false
+                UserDefaults.standard.set(token.id, forKey: "lastActiveTokenId")
 
             default:
                 // Still wallpaper: dismiss dynamic canvas and set image via NSWorkspace
@@ -364,15 +505,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                     controller.dismiss()
                 }
 
-                _ = try wallpaperService.setDesktopWallpaper(
+                let appliedURL = try wallpaperService.setDesktopWallpaper(
                     imageURL: fileURL,
                     tokenId: token.tokenId,
-                    for: screen,
+                    for: nil,
                     scaling: viewModel.scaling,
                     matteColor: matteColor
                 )
+                self.lastAppliedWallpaperURL = appliedURL
+                self.isExternalWallpaperActive = false
                 self.viewModel.currentToken = token
                 self.viewModel.statusMessage = "Live on \(screen.localizedName)"
+                UserDefaults.standard.set(token.id, forKey: "lastActiveTokenId")
             }
 
             // Always reset the timer to the FULL interval whenever a new wallpaper is applied.
@@ -405,6 +549,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                   let idx = tokens.firstIndex(where: { $0.id == current.id }) {
             let nextIdx = (idx + 1) % tokens.count
             nextToken = tokens[nextIdx]
+        } else if let savedId = UserDefaults.standard.string(forKey: "lastActiveTokenId"),
+                  let idx = tokens.firstIndex(where: { $0.id == savedId || $0.tokenId == savedId }) {
+            let nextIdx = (idx + 1) % tokens.count
+            nextToken = tokens[nextIdx]
         } else {
             nextToken = tokens.first!
         }
@@ -418,6 +566,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
         if let current = viewModel.currentToken,
            let idx = tokens.firstIndex(where: { $0.id == current.id }) {
+            let prevIdx = (idx - 1 + tokens.count) % tokens.count
+            await setTokenAsWallpaper(tokens[prevIdx])
+        } else if let savedId = UserDefaults.standard.string(forKey: "lastActiveTokenId"),
+                  let idx = tokens.firstIndex(where: { $0.id == savedId || $0.tokenId == savedId }) {
             let prevIdx = (idx - 1 + tokens.count) % tokens.count
             await setTokenAsWallpaper(tokens[prevIdx])
         } else if let last = tokens.last {

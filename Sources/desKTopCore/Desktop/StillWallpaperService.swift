@@ -66,14 +66,15 @@ public final class StillWallpaperService: Sendable {
         }
     }
 
-    /// Sets the desktop wallpaper for a specific screen, compositing to exact physical device dimensions
+    /// Sets the desktop wallpaper for a specific screen (or all screens if nil), compositing to exact physical device dimensions
     /// so that .fill, .fit, and .center are guaranteed to work across all macOS versions regardless of
     /// deprecated NSWorkspace DesktopImageOptionKey behavior.
     @MainActor
+    @discardableResult
     public func setDesktopWallpaper(
         imageURL: URL,
         tokenId: String,
-        for screen: NSScreen,
+        for targetScreen: NSScreen? = nil,
         scaling: WallpaperScaling = .fit,
         matteColor: NSColor? = nil
     ) throws -> URL {
@@ -83,105 +84,125 @@ public final class StillWallpaperService: Sendable {
 
         cleanOldWallpapers()
 
+        let screensToUpdate = targetScreen.map { [$0] } ?? (NSScreen.screens.isEmpty ? [NSScreen.main].compactMap { $0 } : NSScreen.screens)
+        guard !screensToUpdate.isEmpty else {
+            throw WallpaperError.screenNotFound
+        }
+
         let timestamp = Int(Date().timeIntervalSince1970 * 1000)
-        let uniqueName = "wallpaper_\(tokenId)_\(timestamp).png"
-        let targetURL = activeWallpaperDirectory.appendingPathComponent(uniqueName)
+        var primaryTargetURL: URL?
 
-        // Target pixel dimensions matching physical Retina display resolution
-        let targetWidth = max(Int(screen.frame.width * screen.backingScaleFactor), 1)
-        let targetHeight = max(Int(screen.frame.height * screen.backingScaleFactor), 1)
+        for (index, screen) in screensToUpdate.enumerated() {
+            let uniqueName = "wallpaper_\(tokenId)_s\(index)_\(timestamp).png"
+            let targetURL = activeWallpaperDirectory.appendingPathComponent(uniqueName)
 
-        // Get true native pixel dimensions of the source artwork
-        var imageWidth = sourceImage.size.width
-        var imageHeight = sourceImage.size.height
-        for rep in sourceImage.representations {
-            if rep.pixelsWide > 0 && rep.pixelsHigh > 0 {
-                imageWidth = CGFloat(rep.pixelsWide)
-                imageHeight = CGFloat(rep.pixelsHigh)
-                break
+            // Target pixel dimensions matching physical Retina display resolution
+            let targetWidth = max(Int(screen.frame.width * screen.backingScaleFactor), 1)
+            let targetHeight = max(Int(screen.frame.height * screen.backingScaleFactor), 1)
+
+            // Get true native pixel dimensions of the source artwork
+            var imageWidth = sourceImage.size.width
+            var imageHeight = sourceImage.size.height
+            for rep in sourceImage.representations {
+                if rep.pixelsWide > 0 && rep.pixelsHigh > 0 {
+                    imageWidth = CGFloat(rep.pixelsWide)
+                    imageHeight = CGFloat(rep.pixelsHigh)
+                    break
+                }
+            }
+            guard imageWidth > 0 && imageHeight > 0 else {
+                throw WallpaperError.imageLoadFailed
+            }
+
+            // Calculate drawing rectangle based on chosen framing mode
+            let drawRect: CGRect
+            switch scaling {
+            case .fill:
+                // Aspect Fill: scale up so artwork completely covers the entire screen, cropping any overhang
+                let scale = max(CGFloat(targetWidth) / imageWidth, CGFloat(targetHeight) / imageHeight)
+                let drawW = imageWidth * scale
+                let drawH = imageHeight * scale
+                let drawX = (CGFloat(targetWidth) - drawW) / 2.0
+                let drawY = (CGFloat(targetHeight) - drawH) / 2.0
+                drawRect = CGRect(x: drawX, y: drawY, width: drawW, height: drawH)
+
+            case .fit:
+                // Aspect Fit: scale proportionally so entire artwork is visible, letterboxed with matteColor
+                let scale = min(CGFloat(targetWidth) / imageWidth, CGFloat(targetHeight) / imageHeight)
+                let drawW = imageWidth * scale
+                let drawH = imageHeight * scale
+                let drawX = (CGFloat(targetWidth) - drawW) / 2.0
+                let drawY = (CGFloat(targetHeight) - drawH) / 2.0
+                drawRect = CGRect(x: drawX, y: drawY, width: drawW, height: drawH)
+
+            case .center:
+                // Center: 1:1 native pixel rendering centered on the screen canvas
+                let drawW = imageWidth
+                let drawH = imageHeight
+                let drawX = (CGFloat(targetWidth) - drawW) / 2.0
+                let drawY = (CGFloat(targetHeight) - drawH) / 2.0
+                drawRect = CGRect(x: drawX, y: drawY, width: drawW, height: drawH)
+            }
+
+            // Create bitmap context matching target display dimensions
+            let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+            guard let context = CGContext(
+                data: nil,
+                width: targetWidth,
+                height: targetHeight,
+                bitsPerComponent: 8,
+                bytesPerRow: 0,
+                space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else {
+                throw WallpaperError.renderFailed
+            }
+
+            // 1. Fill background with matteColor (or black)
+            let bgNSColor = matteColor?.usingColorSpace(.sRGB) ?? NSColor.black
+            context.setFillColor(bgNSColor.cgColor)
+            context.fill(CGRect(x: 0, y: 0, width: targetWidth, height: targetHeight))
+
+            // 2. High-quality interpolation for artwork drawing
+            context.interpolationQuality = .high
+            if let cgImage = sourceImage.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+                context.draw(cgImage, in: drawRect)
+            } else {
+                NSGraphicsContext.saveGraphicsState()
+                let nsContext = NSGraphicsContext(cgContext: context, flipped: false)
+                NSGraphicsContext.current = nsContext
+                sourceImage.draw(in: drawRect)
+                NSGraphicsContext.restoreGraphicsState()
+            }
+
+            guard let compositedCGImage = context.makeImage() else {
+                throw WallpaperError.renderFailed
+            }
+
+            let bitmapRep = NSBitmapImageRep(cgImage: compositedCGImage)
+            // Ensure size reflects point dimensions so macOS recognizes Retina DPI
+            bitmapRep.size = screen.frame.size
+            guard let pngData = bitmapRep.representation(using: .png, properties: [:]) else {
+                throw WallpaperError.renderFailed
+            }
+
+            try pngData.write(to: targetURL, options: .atomic)
+
+            let options: [NSWorkspace.DesktopImageOptionKey: Any] = [
+                .imageScaling: NSImageScaling.scaleAxesIndependently.rawValue,
+                .allowClipping: true
+            ]
+
+            do {
+                try NSWorkspace.shared.setDesktopImageURL(targetURL, for: screen, options: options)
+                if primaryTargetURL == nil {
+                    primaryTargetURL = targetURL
+                }
+            } catch {
+                throw WallpaperError.systemWorkspaceError(error)
             }
         }
-        guard imageWidth > 0 && imageHeight > 0 else {
-            throw WallpaperError.imageLoadFailed
-        }
 
-        // Calculate drawing rectangle based on chosen framing mode
-        let drawRect: CGRect
-        switch scaling {
-        case .fill:
-            // Aspect Fill: scale up so artwork completely covers the entire screen, cropping any overhang
-            let scale = max(CGFloat(targetWidth) / imageWidth, CGFloat(targetHeight) / imageHeight)
-            let drawW = imageWidth * scale
-            let drawH = imageHeight * scale
-            let drawX = (CGFloat(targetWidth) - drawW) / 2.0
-            let drawY = (CGFloat(targetHeight) - drawH) / 2.0
-            drawRect = CGRect(x: drawX, y: drawY, width: drawW, height: drawH)
-
-        case .fit:
-            // Aspect Fit: scale proportionally so entire artwork is visible, letterboxed with matteColor
-            let scale = min(CGFloat(targetWidth) / imageWidth, CGFloat(targetHeight) / imageHeight)
-            let drawW = imageWidth * scale
-            let drawH = imageHeight * scale
-            let drawX = (CGFloat(targetWidth) - drawW) / 2.0
-            let drawY = (CGFloat(targetHeight) - drawH) / 2.0
-            drawRect = CGRect(x: drawX, y: drawY, width: drawW, height: drawH)
-
-        case .center:
-            // Center: 1:1 native pixel rendering centered on the screen canvas
-            let drawW = imageWidth
-            let drawH = imageHeight
-            let drawX = (CGFloat(targetWidth) - drawW) / 2.0
-            let drawY = (CGFloat(targetHeight) - drawH) / 2.0
-            drawRect = CGRect(x: drawX, y: drawY, width: drawW, height: drawH)
-        }
-
-        // Create bitmap context matching target display dimensions
-        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
-        guard let context = CGContext(
-            data: nil,
-            width: targetWidth,
-            height: targetHeight,
-            bitsPerComponent: 8,
-            bytesPerRow: 0,
-            space: colorSpace,
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else {
-            throw WallpaperError.renderFailed
-        }
-
-        // 1. Fill background with matteColor (or black)
-        let bgNSColor = matteColor?.usingColorSpace(.sRGB) ?? NSColor.black
-        context.setFillColor(bgNSColor.cgColor)
-        context.fill(CGRect(x: 0, y: 0, width: targetWidth, height: targetHeight))
-
-        // 2. High-quality interpolation for artwork drawing
-        context.interpolationQuality = .high
-        if let cgImage = sourceImage.cgImage(forProposedRect: nil, context: nil, hints: nil) {
-            context.draw(cgImage, in: drawRect)
-        } else {
-            NSGraphicsContext.saveGraphicsState()
-            let nsContext = NSGraphicsContext(cgContext: context, flipped: false)
-            NSGraphicsContext.current = nsContext
-            sourceImage.draw(in: drawRect)
-            NSGraphicsContext.restoreGraphicsState()
-        }
-
-        guard let compositedCGImage = context.makeImage() else {
-            throw WallpaperError.renderFailed
-        }
-
-        let bitmapRep = NSBitmapImageRep(cgImage: compositedCGImage)
-        guard let pngData = bitmapRep.representation(using: .png, properties: [:]) else {
-            throw WallpaperError.renderFailed
-        }
-
-        try pngData.write(to: targetURL, options: .atomic)
-
-        do {
-            try NSWorkspace.shared.setDesktopImageURL(targetURL, for: screen, options: [:])
-            return targetURL
-        } catch {
-            throw WallpaperError.systemWorkspaceError(error)
-        }
+        return primaryTargetURL!
     }
 }

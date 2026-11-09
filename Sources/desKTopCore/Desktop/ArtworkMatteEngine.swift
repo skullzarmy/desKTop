@@ -103,3 +103,13 @@ public enum ArtworkMatteEngine {
         return NSColor(srgbRed: r, green: g, blue: b, alpha: 1.0)
     }
 }
+
+extension NSColor {
+    public var hexString: String {
+        guard let rgb = usingColorSpace(.sRGB) else { return "#000000" }
+        let r = max(0, min(255, Int(rgb.redComponent * 255.0)))
+        let g = max(0, min(255, Int(rgb.greenComponent * 255.0)))
+        let b = max(0, min(255, Int(rgb.blueComponent * 255.0)))
+        return String(format: "#%02X%02X%02X", r, g, b)
+    }
+}
