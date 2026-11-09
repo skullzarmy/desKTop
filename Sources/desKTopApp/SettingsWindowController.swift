@@ -12,12 +12,12 @@ public final class SettingsWindowController: NSWindowController, NSWindowDelegat
 
     private init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 580, height: 460),
+            contentRect: NSRect(x: 0, y: 0, width: 620, height: 500),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
         )
-        window.title = "desKTop Settings"
+        window.title = "Settings"
         window.center()
         window.setFrameAutosaveName("desKTopSettingsWindowAutosave")
         window.isReleasedWhenClosed = false
@@ -29,11 +29,11 @@ public final class SettingsWindowController: NSWindowController, NSWindowDelegat
         fatalError("init(coder:) has not been implemented")
     }
 
-    public func show(repository: WalletRepository) {
+    public func show(repository: WalletRepository, initialTab: SettingsTab = .energy) {
         guard let window = self.window else { return }
 
         self.currentRepository = repository
-        let hosting = NSHostingView(rootView: SettingsView(repository: repository))
+        let hosting = NSHostingView(rootView: SettingsView(repository: repository, initialTab: initialTab))
         window.contentView = hosting
 
         // Activate regular policy so the Settings window behaves like a first-class macOS window

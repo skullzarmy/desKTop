@@ -403,10 +403,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     @objc func openSettingsWindow() {
+        openSettingsWindow(tab: .energy)
+    }
+
+    func openSettingsWindow(tab: SettingsTab = .energy) {
         if popover.isShown {
             popover.performClose(nil)
         }
-        SettingsWindowController.shared.show(repository: repository)
+        SettingsWindowController.shared.show(repository: repository, initialTab: tab)
     }
 
     @objc func showSettingsWindow(_ sender: Any?) {
@@ -418,7 +422,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     @objc private func checkForUpdatesMenuClicked() {
-        openSettingsWindow()
+        openSettingsWindow(tab: .updates)
     }
 
     @objc private func openLibraryWindow() {

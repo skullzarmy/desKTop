@@ -2,6 +2,24 @@ import SwiftUI
 import ServiceManagement
 import AppKit
 
+public enum SettingsTab: String, CaseIterable, Identifiable, Sendable {
+    case energy = "Energy & Motion"
+    case framing = "Framing"
+    case updates = "Updates"
+    case about = "About"
+
+    public var id: String { rawValue }
+
+    public var icon: String {
+        switch self {
+        case .energy: return "bolt.fill"
+        case .framing: return "aspectratio.fill"
+        case .updates: return "arrow.triangle.2.circlepath"
+        case .about: return "info.circle"
+        }
+    }
+}
+
 public struct SettingsView: View {
     @AppStorage("disableAnimations") private var disableAnimations: Bool = false
     @AppStorage("pauseOnBattery") private var pauseOnBattery: Bool = false
@@ -10,6 +28,7 @@ public struct SettingsView: View {
     @AppStorage("wallpaperMatteMode") private var wallpaperMatteModeRaw: String = WallpaperMatteMode.dynamicArtwork.rawValue
     @AppStorage("autoCheckUpdates") private var autoCheckUpdates: Bool = true
 
+    @State private var selectedTab: SettingsTab
     @State private var launchAtLogin: Bool = false
 
     // Update checker state
@@ -22,25 +41,73 @@ public struct SettingsView: View {
     private let repository: WalletRepository
     private let updateService = UpdateService.shared
 
-    public init(repository: WalletRepository) {
+    public init(repository: WalletRepository, initialTab: SettingsTab = .energy) {
         self.repository = repository
+        self._selectedTab = State(initialValue: initialTab)
     }
 
     public var body: some View {
-        TabView {
-            energyTab
-                .tabItem { Label("Energy & Motion", systemImage: "bolt.fill") }
+        VStack(spacing: 0) {
+            // Prominent, non-collapsing top tab bar with icons
+            HStack(spacing: 8) {
+                ForEach(SettingsTab.allCases) { tab in
+                    Button(action: {
+                        withAnimation(.easeInOut(duration: 0.12)) {
+                            selectedTab = tab
+                        }
+                    }) {
+                        HStack(spacing: 6) {
+                            Image(systemName: tab.icon)
+                                .font(.system(size: 12, weight: .semibold))
+                            Text(tab.rawValue)
+                                .font(.system(size: 13, weight: selectedTab == tab ? .semibold : .regular))
+                        }
+                        .padding(.vertical, 7)
+                        .padding(.horizontal, 12)
+                        .frame(maxWidth: .infinity)
+                        .background(
+                            selectedTab == tab
+                                ? Color(NSColor.selectedContentBackgroundColor).opacity(0.18)
+                                : Color.clear
+                        )
+                        .foregroundColor(
+                            selectedTab == tab
+                                ? Color(NSColor.labelColor)
+                                : Color(NSColor.secondaryLabelColor)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6)
+                                .stroke(selectedTab == tab ? Color(NSColor.separatorColor) : Color.clear, lineWidth: 1)
+                        )
+                        .cornerRadius(6)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(Color(NSColor.windowBackgroundColor))
 
-            framingTab
-                .tabItem { Label("Framing", systemImage: "aspectratio.fill") }
+            Divider()
 
-            updatesTab
-                .tabItem { Label("Updates", systemImage: "arrow.triangle.2.circlepath") }
-
-            aboutTab
-                .tabItem { Label("About", systemImage: "info.circle") }
+            ScrollView(.vertical, showsIndicators: true) {
+                VStack(alignment: .leading, spacing: 0) {
+                    switch selectedTab {
+                    case .energy:
+                        energyTab
+                    case .framing:
+                        framingTab
+                    case .updates:
+                        updatesTab
+                    case .about:
+                        aboutTab
+                    }
+                }
+                .padding(20)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
-        .frame(width: 580, height: 440)
+        .frame(width: 620, height: 480)
         .onAppear {
             checkLaunchAtLoginStatus()
         }
