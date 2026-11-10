@@ -120,6 +120,8 @@ public struct LibraryView: View {
     @State private var sortOption: TokenSortOption = .dateAcquired
     @State private var sortDirection: SortDirection = .descending
     @State private var gridSize: Double = 180
+    @State private var displayedTokens: [UnifiedToken] = []
+    @State private var renderLimit: Int = 80
 
     // Wallpaper Matte Settings
     @AppStorage("wallpaperMatteMode") private var matteMode: WallpaperMatteMode = .dynamicArtwork
@@ -159,6 +161,60 @@ public struct LibraryView: View {
 
     // MARK: - Helpers
 
+    private var selectedGallery: DesktopGallery? {
+        if case .customGallery(let gid) = selectedSidebarItem {
+            return galleries.first(where: { $0.id == gid })
+        }
+        return nil
+    }
+
+    public func resolveCardArtistName(for token: UnifiedToken) -> String {
+        // If viewing an artist-focused gallery, prioritize matching that artist:
+        if let crit = selectedGallery?.criteria, let target = crit.targetWallet?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+            let targetDomain = crit.targetDomain?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            for creator in token.creators {
+                let cLower = creator.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                let alias = artistDisplayName(for: creator).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                if cLower == target || alias == target || (targetDomain != nil && (cLower == targetDomain || alias == targetDomain)) {
+                    let displayName = artistDisplayName(for: creator)
+                    let distinctAddrs = Set(token.creators.compactMap { c -> String? in
+                        let lower = c.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                        return (lower.hasPrefix("tz") || lower.hasPrefix("kt")) ? lower : nil
+                    })
+                    if distinctAddrs.count > 1 {
+                        return "\(displayName) (collab)"
+                    }
+                    return displayName
+                }
+            }
+        }
+
+        guard let first = token.creators.first else { return "" }
+        let primary = artistDisplayName(for: first)
+        let distinctAddrs = Set(token.creators.compactMap { c -> String? in
+            let lower = c.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return (lower.hasPrefix("tz") || lower.hasPrefix("kt")) ? lower : nil
+        })
+        if distinctAddrs.count > 1 {
+            return "\(primary) +\(distinctAddrs.count - 1)"
+        }
+        return primary
+    }
+
+    public func resolveTargetCreatorAddress(for token: UnifiedToken) -> String? {
+        if let crit = selectedGallery?.criteria, let target = crit.targetWallet?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+            let targetDomain = crit.targetDomain?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            for creator in token.creators {
+                let cLower = creator.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                let alias = artistDisplayName(for: creator).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                if cLower == target || alias == target || (targetDomain != nil && (cLower == targetDomain || alias == targetDomain)) {
+                    return creator
+                }
+            }
+        }
+        return token.creators.first
+    }
+
     public func artistDisplayName(for addressOrName: String) -> String {
         let trimmed = addressOrName.trimmingCharacters(in: .whitespacesAndNewlines)
         if let profile = artistProfiles[trimmed] ?? artistProfiles[trimmed.lowercased()] {
@@ -194,7 +250,9 @@ public struct LibraryView: View {
 
     // MARK: - Filtered Tokens Calculation
 
-    public var displayedTokens: [UnifiedToken] {
+    private func updateDisplayedTokens() {
+        renderLimit = 80
+
         // 1. Filter by top-level sidebar selection
         var baseTokens: [UnifiedToken]
         switch selectedSidebarItem {
@@ -296,7 +354,7 @@ public struct LibraryView: View {
             }
         }
 
-        return baseTokens
+        self.displayedTokens = baseTokens
     }
 
     public func resolvedProjectName(for token: UnifiedToken) -> String {
@@ -669,12 +727,13 @@ public struct LibraryView: View {
                         return false
                     }()
 
+                    let targetCreator = resolveTargetCreatorAddress(for: token)
                     TokenInspectorView(
                         token: token,
                         collectionName: colDisplay,
                         collectionTokensCount: colCount,
-                        artistProfile: token.creators.first.flatMap { artistProfile(for: $0) },
-                        artistDisplayName: token.creators.first.map { artistDisplayName(for: $0) } ?? (token.creators.first ?? "Unknown"),
+                        artistProfile: targetCreator.flatMap { artistProfile(for: $0) },
+                        artistDisplayName: targetCreator.map { artistDisplayName(for: $0) } ?? (token.creators.first.map { artistDisplayName(for: $0) } ?? "Unknown"),
                         fxhashProjectInfo: fxhashProjects[token.id],
                         isLiveOnDesktop: currentWallpaperTokenId == token.tokenId,
                         isCollectionMyRotating: isColMyRotating,
@@ -738,6 +797,15 @@ public struct LibraryView: View {
         .task {
             await reloadData()
         }
+        .onChange(of: searchText) { _ in updateDisplayedTokens() }
+        .onChange(of: selectedSidebarItem) { _ in updateDisplayedTokens() }
+        .onChange(of: selectedFormatFilter) { _ in updateDisplayedTokens() }
+        .onChange(of: selectedContractFilter) { _ in updateDisplayedTokens() }
+        .onChange(of: sortOption) { _ in updateDisplayedTokens() }
+        .onChange(of: sortDirection) { _ in updateDisplayedTokens() }
+        .onChange(of: sourceScope) { _ in updateDisplayedTokens() }
+        .onChange(of: collectionScope) { _ in updateDisplayedTokens() }
+        .onChange(of: galleries) { _ in updateDisplayedTokens() }
         .sheet(isPresented: $isSourceSheetPresented) {
             SourceManagementSheet(repository: repository) {
                 Task {
@@ -785,12 +853,12 @@ public struct LibraryView: View {
                         columns: [GridItem(.adaptive(minimum: gridSize, maximum: gridSize * 1.5), spacing: 14)],
                         spacing: 14
                     ) {
-                        ForEach(displayedTokens) { token in
+                        ForEach(displayedTokens.prefix(renderLimit)) { token in
                             let cardColName = token.isFxhash ? resolvedProjectName(for: token) : resolvedName(for: token.contract)
                             TokenCardView(
                                 token: token,
                                 collectionName: cardColName,
-                                artistName: token.creators.first.map { artistDisplayName(for: $0) } ?? "",
+                                artistName: resolveCardArtistName(for: token),
                                 isSelected: selectedToken?.id == token.id,
                                 isLiveOnDesktop: currentWallpaperTokenId == token.tokenId,
                                 galleries: galleries,
@@ -820,6 +888,14 @@ public struct LibraryView: View {
                                     }
                                 }
                             )
+                        }
+
+                        if renderLimit < displayedTokens.count {
+                            Color.clear
+                                .frame(height: 30)
+                                .onAppear {
+                                    renderLimit = min(displayedTokens.count, renderLimit + 60)
+                                }
                         }
                     }
                     .padding(16)
@@ -1846,6 +1922,7 @@ public struct LibraryView: View {
         resolveTopCollections()
         resolveArtists()
         resolveFxhashProjects()
+        updateDisplayedTokens()
     }
 
     private func resolveTopCollections() {
@@ -2025,6 +2102,7 @@ struct CollectionCardView: View {
     let onStartRotatingEntire: () -> Void
 
     @State private var isHovered: Bool = false
+    @State private var hoverTask: Task<Void, Never>? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -2158,7 +2236,19 @@ struct CollectionCardView: View {
             RoundedRectangle(cornerRadius: 10)
                 .stroke(isRotating ? Color.green.opacity(0.5) : (isHovered ? Color.accentColor.opacity(0.5) : Color.secondary.opacity(0.15)), lineWidth: isRotating ? 2 : 1)
         )
-        .onHover { isHovered = $0 }
+        .onHover { hovering in
+            hoverTask?.cancel()
+            if hovering {
+                hoverTask = Task {
+                    try? await Task.sleep(nanoseconds: 350_000_000)
+                    if !Task.isCancelled {
+                        isHovered = true
+                    }
+                }
+            } else {
+                isHovered = false
+            }
+        }
         .contentShape(Rectangle())
         .onTapGesture {
             onSelect()
@@ -2194,6 +2284,7 @@ struct TokenCardView: View {
     let onRemoveFromCurrentGallery: () -> Void
 
     @State private var isHovered: Bool = false
+    @State private var hoverTask: Task<Void, Never>? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -2327,7 +2418,19 @@ struct TokenCardView: View {
             RoundedRectangle(cornerRadius: 10)
                 .stroke(isSelected ? Color.accentColor : Color.secondary.opacity(0.15), lineWidth: isSelected ? 2 : 1)
         )
-        .onHover { isHovered = $0 }
+        .onHover { hovering in
+            hoverTask?.cancel()
+            if hovering {
+                hoverTask = Task {
+                    try? await Task.sleep(nanoseconds: 350_000_000)
+                    if !Task.isCancelled {
+                        isHovered = true
+                    }
+                }
+            } else {
+                isHovered = false
+            }
+        }
         .contentShape(Rectangle())
         .onTapGesture {
             onSelect()
@@ -2386,8 +2489,8 @@ struct TokenCardView: View {
 final class ImageMemoryCache: @unchecked Sendable {
     nonisolated(unsafe) static let shared: NSCache<NSURL, NSImage> = {
         let cache = NSCache<NSURL, NSImage>()
-        cache.countLimit = 150
-        cache.totalCostLimit = 120 * 1024 * 1024 // 120MB
+        cache.countLimit = 80
+        cache.totalCostLimit = 64 * 1024 * 1024 // 64MB limit to keep memory minimal
         return cache
     }()
 }
