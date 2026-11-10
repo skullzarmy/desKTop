@@ -1,8 +1,28 @@
 import AppKit
+import Combine
 import Foundation
 import CoreGraphics
 import CoreImage
 import ImageIO
+
+/// Shared observable state representing the real-time desktop wallpaper pipeline (loading -> live / failed)
+@MainActor
+public final class DesktopWallpaperState: ObservableObject {
+    public static let shared = DesktopWallpaperState()
+
+    public enum Phase: Equatable, Sendable {
+        case idle
+        case loading(tokenId: String, message: String)
+        case live(tokenId: String, tokenName: String, modeLabel: String)
+        case failed(tokenId: String, message: String)
+    }
+
+    @Published public var phase: Phase = .idle
+    @Published public var liveTokenId: String? = nil
+    @Published public var loadingTokenId: String? = nil
+
+    private init() {}
+}
 
 public enum WallpaperScaling: String, Codable, Sendable {
     case fit = "Fit (Aspect Fit with Ambient Blur)"

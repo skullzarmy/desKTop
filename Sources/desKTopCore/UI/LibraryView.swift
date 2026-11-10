@@ -120,7 +120,7 @@ public struct LibraryView: View {
     @State private var selectedSidebarItem: LibrarySidebarItem = .allArt
     @State private var selectedToken: UnifiedToken?
     @State private var isInspectorPresented: Bool = false
-    @State private var currentWallpaperTokenId: String?
+    @ObservedObject private var wallpaperState = DesktopWallpaperState.shared
 
     // Filters and controls
     @State private var searchText: String = ""
@@ -834,14 +834,15 @@ public struct LibraryView: View {
                         artistProfile: targetCreator.flatMap { artistProfile(for: $0) },
                         artistDisplayName: targetCreator.map { artistDisplayName(for: $0) } ?? (token.creators.first.map { artistDisplayName(for: $0) } ?? "Unknown"),
                         fxhashProjectInfo: fxhashProjects[token.id],
-                        isLiveOnDesktop: currentWallpaperTokenId == token.tokenId,
+                        isLiveOnDesktop: wallpaperState.liveTokenId == token.id,
+                        isApplyingToDesktop: wallpaperState.loadingTokenId == token.id,
+                        desktopPhase: wallpaperState.phase,
                         isCollectionMyRotating: isColMyRotating,
                         isCollectionEntireRotating: isColEntireRotating,
                         galleries: galleries,
                         matteMode: $matteMode,
                         customHex: $customHex,
                         onSetWallpaper: {
-                            currentWallpaperTokenId = token.tokenId
                             onSetWallpaper(token)
                         },
                         onRotateCollectionMy: {
@@ -973,13 +974,13 @@ public struct LibraryView: View {
                                 collectionName: cardColName,
                                 artistName: resolveCardArtistName(for: token),
                                 isSelected: selectedToken?.id == token.id,
-                                isLiveOnDesktop: currentWallpaperTokenId == token.tokenId,
+                                isLiveOnDesktop: wallpaperState.liveTokenId == token.id,
+                                isApplyingToDesktop: wallpaperState.loadingTokenId == token.id,
                                 galleries: galleries,
                                 onSelect: {
                                     selectedToken = token
                                 },
                                 onSetAsWallpaper: {
-                                    currentWallpaperTokenId = token.tokenId
                                     onSetWallpaper(token)
                                 },
                                 onAddToGallery: { gid in
@@ -1251,7 +1252,29 @@ public struct LibraryView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
 
-                if isCurrentScopeRotating {
+                if case .loading(_, let msg) = wallpaperState.phase {
+                    HStack(spacing: 5) {
+                        ProgressView()
+                            .controlSize(.mini)
+                        Text(msg)
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(.orange)
+                            .lineLimit(1)
+                    }
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.orange.opacity(0.12))
+                    .cornerRadius(4)
+                } else if case .failed(_, let errMsg) = wallpaperState.phase {
+                    Text(errMsg)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(.red)
+                        .lineLimit(1)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.red.opacity(0.10))
+                        .cornerRadius(4)
+                } else if isCurrentScopeRotating {
                     Text(isRotationPaused ? "PAUSED" : "ROTATING")
                         .font(.system(size: 9, weight: .black))
                         .foregroundColor(isRotationPaused ? .orange : .green)
@@ -2413,6 +2436,7 @@ struct TokenCardView: View {
     let artistName: String
     let isSelected: Bool
     let isLiveOnDesktop: Bool
+    let isApplyingToDesktop: Bool
     let galleries: [DesktopGallery]
     let onSelect: () -> Void
     let onSetAsWallpaper: () -> Void
@@ -2434,10 +2458,24 @@ struct TokenCardView: View {
                         .frame(width: geo.size.width, height: geo.size.height)
                         .clipped()
 
-                    // Top Left Live or Ownership Badges
+                    // Top Left Live / Applying / Ownership Badges
                     VStack {
                         HStack(spacing: 4) {
-                            if isLiveOnDesktop {
+                            if isApplyingToDesktop {
+                                HStack(spacing: 3) {
+                                    ProgressView()
+                                        .controlSize(.mini)
+                                        .scaleEffect(0.65)
+                                    Text("APPLYING…")
+                                        .font(.system(size: 8, weight: .black))
+                                        .foregroundColor(.white)
+                                }
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 3)
+                                .background(Color.orange)
+                                .cornerRadius(4)
+                                .shadow(radius: 2)
+                            } else if isLiveOnDesktop {
                                 Text("LIVE ON DESKTOP")
                                     .font(.system(size: 8, weight: .black))
                                     .foregroundColor(.white)
@@ -2895,6 +2933,8 @@ struct TokenInspectorView: View {
     let artistDisplayName: String
     let fxhashProjectInfo: FxhashProjectInfo?
     let isLiveOnDesktop: Bool
+    let isApplyingToDesktop: Bool
+    let desktopPhase: DesktopWallpaperState.Phase
     let isCollectionMyRotating: Bool
     let isCollectionEntireRotating: Bool
     let galleries: [DesktopGallery]
@@ -3228,12 +3268,38 @@ struct TokenInspectorView: View {
                 .cornerRadius(8)
 
                 // Primary Set Desktop Action
-                Button(action: onSetWallpaper) {
-                    Label(isLiveOnDesktop ? "Currently on Desktop" : "Set as Desktop Wallpaper", systemImage: "display")
-                        .frame(maxWidth: .infinity)
+                VStack(alignment: .leading, spacing: 6) {
+                    Button(action: onSetWallpaper) {
+                        if isApplyingToDesktop {
+                            HStack(spacing: 8) {
+                                ProgressView()
+                                    .controlSize(.small)
+                                if case .loading(_, let msg) = desktopPhase {
+                                    Text(msg)
+                                } else {
+                                    Text("Applying to Desktop…")
+                                }
+                            }
+                            .frame(maxWidth: .infinity)
+                        } else if isLiveOnDesktop {
+                            Label("Live on Desktop", systemImage: "checkmark.circle.fill")
+                                .frame(maxWidth: .infinity)
+                        } else {
+                            Label("Set as Desktop Wallpaper", systemImage: "display")
+                                .frame(maxWidth: .infinity)
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(isApplyingToDesktop ? .orange : (isLiveOnDesktop ? .green : .accentColor))
+                    .disabled(isApplyingToDesktop)
+                    .controlSize(.large)
+
+                    if case .failed(let failedId, let errMsg) = desktopPhase, failedId == token.id {
+                        Text("Failed to apply: \(errMsg)")
+                            .font(.caption2)
+                            .foregroundColor(.red)
+                    }
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
 
                 // Add to Gallery Picker
                 if !galleries.isEmpty {

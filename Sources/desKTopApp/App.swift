@@ -55,6 +55,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var lastAppliedWallpaperURL: URL?
     private var isExternalWallpaperActive: Bool = false
     private var pendingRotationChangeTask: Task<Void, Never>?
+    private var applyWallpaperTask: Task<Void, Never>?
+    private var wallpaperRequestSeq: UInt64 = 0
     private var cancellables = Set<AnyCancellable>()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -258,6 +260,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             isExternalWallpaperActive = false
             viewModel.currentToken = tokenToDisplay
             viewModel.statusMessage = "Live on \(screen.localizedName)"
+            if DesktopWallpaperState.shared.liveTokenId == nil {
+                DesktopWallpaperState.shared.liveTokenId = tokenToDisplay.id
+                DesktopWallpaperState.shared.phase = .live(tokenId: tokenToDisplay.id, tokenName: tokenToDisplay.name, modeLabel: "Desktop")
+            }
         }
     }
 
@@ -432,16 +438,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
 
         LibraryWindowController.shared.show(repository: repository) { [weak self] token in
-            Task {
-                await self?.setTokenAsWallpaper(token)
-            }
+            self?.requestSetTokenAsWallpaper(token)
+        }
+    }
+
+    private func requestSetTokenAsWallpaper(_ token: UnifiedToken) {
+        applyWallpaperTask?.cancel()
+        applyWallpaperTask = Task { @MainActor [weak self] in
+            await self?.setTokenAsWallpaper(token)
         }
     }
 
     @objc private func showAboutDialog() {
         let alert = NSAlert()
         alert.messageText = "desKTop"
-        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.1"
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
         alert.informativeText = "Version \(version)\n\nTurn your Mac desktop into a living Tezos art gallery.\n\na FAFOlab joint\nhttps://fafolab.xyz\n\nOpen source under The Unlicense."
         alert.alertStyle = .informational
         if let icon = NSApp.applicationIconImage {
@@ -499,12 +510,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     func setTokenAsWallpaper(_ token: UnifiedToken) async {
+        wallpaperRequestSeq &+= 1
+        let mySeq = wallpaperRequestSeq
+
         guard let uri = token.primaryWallpaperUri else {
             viewModel.statusMessage = "No media available"
+            DesktopWallpaperState.shared.loadingTokenId = nil
+            DesktopWallpaperState.shared.phase = .failed(tokenId: token.id, message: "No media available")
             return
         }
 
-        viewModel.statusMessage = "Loading \(token.name)..."
+        viewModel.statusMessage = "Fetching \(token.name)…"
+        DesktopWallpaperState.shared.loadingTokenId = token.id
+        DesktopWallpaperState.shared.phase = .loading(tokenId: token.id, message: "Fetching artwork…")
+
         do {
             let liveNonImageCategories: Set<MediaCategory> = [
                 .video, .fxhash, .editArt, .interactiveHtml, .aleatory, .bootloader
@@ -533,6 +552,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 }
             }
 
+            guard mySeq == wallpaperRequestSeq, !Task.isCancelled else { return }
             guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
             let screenID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID ?? CGMainDisplayID()
             let displayUUID = DisplayManager.persistentUUID(for: screenID)
@@ -552,21 +572,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 }
             }
 
-            // Resolve the flat still/poster image for this exact piece (used for both matte color and system wallpaper sync)
-            let posterURL = await resolveStillPosterURL(for: token, primaryFileURL: fileURL, category: effectiveCategory)
+            DesktopWallpaperState.shared.phase = .loading(tokenId: token.id, message: "Applying to desktop…")
+            viewModel.statusMessage = "Applying \(token.name)…"
 
-            // Resolve border / letterbox matte color based on this piece's still image & user preference
-            let matteModeRaw = UserDefaults.standard.string(forKey: "wallpaperMatteMode") ?? WallpaperMatteMode.dynamicArtwork.rawValue
-            let matteMode = WallpaperMatteMode(rawValue: matteModeRaw) ?? .dynamicArtwork
-            let customHex = UserDefaults.standard.string(forKey: "wallpaperCustomHex")
-            let matteColor = ArtworkMatteEngine.resolveMatteColor(imageURL: posterURL ?? fileURL, mode: matteMode, customHex: customHex)
-
-            // Energy & Motion tuning check:
+            // Energy & Motion tuning check
             let disableAnimations = UserDefaults.standard.bool(forKey: "disableAnimations")
             let pauseOnBattery = UserDefaults.standard.bool(forKey: "pauseOnBattery")
             let shouldFreeze = disableAnimations || (pauseOnBattery && PowerGuardian.shared.isOnBattery) || PowerGuardian.shared.isLowPowerModeEnabled
 
+            let matteModeRaw = UserDefaults.standard.string(forKey: "wallpaperMatteMode") ?? WallpaperMatteMode.dynamicArtwork.rawValue
+            let matteMode = WallpaperMatteMode(rawValue: matteModeRaw) ?? .dynamicArtwork
+            let customHex = UserDefaults.standard.string(forKey: "wallpaperCustomHex")
+
             if shouldFreeze && effectiveCategory != .staticImage && effectiveCategory != .vectorImage && effectiveCategory != .audio3d && effectiveCategory != .unknown {
+                let posterURL = await resolveStillPosterURL(for: token, primaryFileURL: fileURL, category: effectiveCategory)
+                guard mySeq == wallpaperRequestSeq, !Task.isCancelled else { return }
+                let matteColor = ArtworkMatteEngine.resolveMatteColor(imageURL: posterURL ?? fileURL, mode: matteMode, customHex: customHex)
+
                 for controller in canvasControllers.values {
                     controller.dismiss()
                 }
@@ -591,6 +613,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 self.isExternalWallpaperActive = false
                 self.viewModel.currentToken = token
                 self.viewModel.statusMessage = "Live on \(screen.localizedName) (Static Mode)"
+                DesktopWallpaperState.shared.loadingTokenId = nil
+                DesktopWallpaperState.shared.liveTokenId = token.id
+                DesktopWallpaperState.shared.phase = .live(tokenId: token.id, tokenName: token.name, modeLabel: "Static Mode")
                 UserDefaults.standard.set(token.id, forKey: "lastActiveTokenId")
                 self.rotationScheduler?.restartTimer()
                 return
@@ -598,38 +623,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
             switch effectiveCategory {
             case .animatedImage, .video, .fxhash, .aleatory, .bootloader, .editArt, .interactiveHtml:
-                // Always synchronize the underlying macOS desktop wallpaper to the flat image of this SAME piece
-                // so Mission Control, Spaces switches, Lock Screen, and wallpaper settings never show an old piece underneath.
-                if let flatURL = posterURL,
-                   let appliedURL = try? wallpaperService.setDesktopWallpaper(
-                    imageURL: flatURL,
-                    tokenId: token.tokenId,
-                    for: nil,
-                    scaling: viewModel.scaling,
-                    matteColor: matteColor
-                   ) {
-                    self.lastAppliedWallpaperURL = appliedURL
-                } else if let appliedURL = try? wallpaperService.setSolidMatteWallpaper(
-                    tokenId: token.tokenId,
-                    for: nil,
-                    matteColor: matteColor
-                ) {
-                    self.lastAppliedWallpaperURL = appliedURL
-                }
+                // Compute immediate matte color from fileURL if it is already an image/GIF (<3ms via ImageIO 64px thumbnail)
+                let initialMatte = ArtworkMatteEngine.resolveMatteColor(imageURL: fileURL, mode: matteMode, customHex: customHex)
 
                 let controller = canvasControllers[displayUUID] ?? DesktopCanvasWindowController(screen: screen, displayUUID: displayUUID)
                 canvasControllers[displayUUID] = controller
                 controller.updateFrame(for: screen)
-                controller.setBackgroundColor(matteColor)
+                controller.setBackgroundColor(initialMatte)
 
                 let modeLabel: String
                 switch effectiveCategory {
                 case .animatedImage:
-                    // Hardware-accelerated WebKit canvas for animated GIFs / WebP
                     let tokenDir = fileURL.deletingLastPathComponent()
                     let webView = SandboxedArtWebView(tokenDirectory: tokenDir, frame: screen.frame)
                     let objectFit = (viewModel.scaling == .fill) ? "cover" : (viewModel.scaling == .center ? "none" : "contain")
-                    let bgHex = matteColor.hexString
+                    let bgHex = initialMatte.hexString
                     let fileName = fileURL.lastPathComponent
                     let encodedFileName = fileName.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? fileName
                     let html = """
@@ -659,7 +667,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                     modeLabel = "Video Loop"
 
                 default:
-                    // Generative WebGL/HTML engine on desktop canvas
                     let webView = SandboxedArtWebView(frame: screen.frame)
                     if token.mediaCategory == .aleatory, let alea = token.aleatory, let code = alea.code {
                         let decompressed = (try? AleatoryRuntime.decompress(code: code, encoding: alea.encoding)) ?? code
@@ -675,14 +682,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                     modeLabel = "Generative"
                 }
 
+                // Present live canvas immediately so the artwork is visible before updating macOS's underlying still backup
                 controller.present()
                 self.viewModel.currentToken = token
                 self.viewModel.statusMessage = "Live on \(screen.localizedName) (\(modeLabel))"
                 self.isExternalWallpaperActive = false
+                DesktopWallpaperState.shared.loadingTokenId = nil
+                DesktopWallpaperState.shared.liveTokenId = token.id
+                DesktopWallpaperState.shared.phase = .live(tokenId: token.id, tokenName: token.name, modeLabel: modeLabel)
                 UserDefaults.standard.set(token.id, forKey: "lastActiveTokenId")
 
+                // Sync macOS underlying desktop wallpaper to the flat image of this SAME piece right behind the live panel
+                let syncScaling = viewModel.scaling
+                Task { @MainActor [weak self] in
+                    guard let self = self, self.wallpaperRequestSeq == mySeq else { return }
+                    let posterURL = await self.resolveStillPosterURL(for: token, primaryFileURL: fileURL, category: effectiveCategory)
+                    guard self.wallpaperRequestSeq == mySeq else { return }
+                    let finalMatte = ArtworkMatteEngine.resolveMatteColor(imageURL: posterURL ?? fileURL, mode: matteMode, customHex: customHex)
+                    self.canvasControllers[displayUUID]?.setBackgroundColor(finalMatte)
+                    if let flatURL = posterURL,
+                       let appliedURL = try? self.wallpaperService.setDesktopWallpaper(
+                        imageURL: flatURL,
+                        tokenId: token.tokenId,
+                        for: nil,
+                        scaling: syncScaling,
+                        matteColor: finalMatte
+                       ) {
+                        self.lastAppliedWallpaperURL = appliedURL
+                    } else if let appliedURL = try? self.wallpaperService.setSolidMatteWallpaper(
+                        tokenId: token.tokenId,
+                        for: nil,
+                        matteColor: finalMatte
+                    ) {
+                        self.lastAppliedWallpaperURL = appliedURL
+                    }
+                }
+
             default:
-                // Still wallpaper: dismiss dynamic canvases and set image via NSWorkspace
+                let posterURL = await resolveStillPosterURL(for: token, primaryFileURL: fileURL, category: effectiveCategory)
+                guard mySeq == wallpaperRequestSeq, !Task.isCancelled else { return }
+                let matteColor = ArtworkMatteEngine.resolveMatteColor(imageURL: posterURL ?? fileURL, mode: matteMode, customHex: customHex)
+
                 for controller in canvasControllers.values {
                     controller.dismiss()
                 }
@@ -698,14 +738,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 self.isExternalWallpaperActive = false
                 self.viewModel.currentToken = token
                 self.viewModel.statusMessage = "Live on \(screen.localizedName)"
+                DesktopWallpaperState.shared.loadingTokenId = nil
+                DesktopWallpaperState.shared.liveTokenId = token.id
+                DesktopWallpaperState.shared.phase = .live(tokenId: token.id, tokenName: token.name, modeLabel: "Static")
                 UserDefaults.standard.set(token.id, forKey: "lastActiveTokenId")
             }
 
-            // Always reset the timer to the FULL interval whenever a new wallpaper is applied.
-            // This prevents unexpected swaps 30 seconds after setting!
             self.rotationScheduler?.restartTimer()
         } catch {
+            guard mySeq == wallpaperRequestSeq else { return }
             self.viewModel.statusMessage = "Error: \(error.localizedDescription)"
+            DesktopWallpaperState.shared.loadingTokenId = nil
+            DesktopWallpaperState.shared.phase = .failed(tokenId: token.id, message: error.localizedDescription)
         }
     }
 
