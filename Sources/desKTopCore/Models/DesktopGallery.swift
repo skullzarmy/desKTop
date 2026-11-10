@@ -21,6 +21,7 @@ public struct GalleryFilterCriteria: Hashable, Codable, Sendable {
     public var collectionKey: String?
     public var sourceScope: String?            // "all", "owned", "created"
     public var targetWallet: String?           // Wallet address or .tez domain being followed
+    public var targetDomain: String?           // Optional resolved domain (e.g. failure001.tez)
     public var walletScope: WalletFollowScope? // .created vs .owned
     public var sortOption: String?
     public var sortDirection: String?
@@ -31,6 +32,7 @@ public struct GalleryFilterCriteria: Hashable, Codable, Sendable {
         collectionKey: String? = nil,
         sourceScope: String? = nil,
         targetWallet: String? = nil,
+        targetDomain: String? = nil,
         walletScope: WalletFollowScope? = nil,
         sortOption: String? = nil,
         sortDirection: String? = nil
@@ -40,6 +42,7 @@ public struct GalleryFilterCriteria: Hashable, Codable, Sendable {
         self.collectionKey = collectionKey
         self.sourceScope = sourceScope
         self.targetWallet = targetWallet
+        self.targetDomain = targetDomain
         self.walletScope = walletScope
         self.sortOption = sortOption
         self.sortDirection = sortDirection
@@ -108,12 +111,15 @@ public struct GalleryFilterCriteria: Hashable, Codable, Sendable {
 
         // 5. Target Wallet Follower (Created or Owned)
         if let wallet = targetWallet?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), !wallet.isEmpty {
+            let domain = targetDomain?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             let scope = walletScope ?? .created
             if scope == .created {
                 let matchesCreator = token.creators.contains { c in
                     let cLower = c.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                    let alias = artistDisplayName(c).lowercased()
-                    return cLower == wallet || cLower.contains(wallet) || wallet.contains(cLower) || alias == wallet || alias.contains(wallet)
+                    let alias = artistDisplayName(c).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                    if cLower == wallet || alias == wallet { return true }
+                    if let d = domain, !d.isEmpty, (cLower == d || alias == d) { return true }
+                    return false
                 }
                 if !matchesCreator { return false }
             } else if scope == .owned {

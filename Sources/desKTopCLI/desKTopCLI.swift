@@ -5,7 +5,7 @@ import desKTopCore
 struct desKTopCLI {
     static func main() async {
         print("=== desKTop v1.0 CLI ===")
-        print("Created by FAFO~~lab~~ (a FAFO~~lab~~ joint) - https://fafolab.xyz\n")
+        print("a FAFOlab joint - https://fafolab.xyz\n")
 
         let args = CommandLine.arguments.dropFirst()
         let query = args.first ?? "builder.hack"
@@ -14,7 +14,7 @@ struct desKTopCLI {
 
         // 1. Check if it's a domain or address
         if let domain = TezosDomain(query) {
-            print("✓ Detected Tezos Domain: \(domain.name)")
+            print("[OK] Detected Tezos Domain: \(domain.name)")
             print("  Normalized: \(domain.normalized)")
             print("  isHackSubdomain: \(domain.isHackSubdomain)")
 
@@ -22,7 +22,7 @@ struct desKTopCLI {
             let resolver = TezosDomainsResolver()
             do {
                 if let profile = try await resolver.resolve(domainInput: domain.normalized) {
-                    print("✓ Resolved address: \(profile.address)")
+                    print("[OK] Resolved address: \(profile.address)")
                     if let avatar = profile.avatarUri {
                         print("  Avatar URI: \(avatar)")
                     }
@@ -36,7 +36,7 @@ struct desKTopCLI {
                 print("  Resolution error: \(error.localizedDescription)")
             }
         } else if let address = TezosAddress(query) {
-            print("✓ Validated Tezos Address: \(address.raw) (type: \(address.type))")
+            print("[OK] Validated Tezos Address: \(address.raw) (type: \(address.type))")
 
             print("Fetching recent tokens via TzKT...")
             let tzkt = TzKTClient()
@@ -47,7 +47,7 @@ struct desKTopCLI {
                 print("  Found \(tokens.count) raw tokens from TzKT.")
 
                 let filtered = filter.filter(tokens)
-                print("  ✓ Passed art filter: \(filtered.count) tokens.")
+                print("  [OK] Passed art filter: \(filtered.count) tokens.")
 
                 for token in filtered.prefix(3) {
                     print("    - [\(token.id)] \(token.name) (Category: \(token.mediaCategory))")
@@ -59,7 +59,7 @@ struct desKTopCLI {
                 print("  TzKT query failed: \(error.localizedDescription)")
             }
         } else {
-            print("❌ Input is neither a valid Tezos address nor a supported Tezos domain format.")
+            print("[ERROR] Input is neither a valid Tezos address nor a supported Tezos domain format.")
         }
     }
 }

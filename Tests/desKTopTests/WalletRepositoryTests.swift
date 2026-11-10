@@ -117,7 +117,15 @@ public struct WalletRepositoryTests {
             creators: [artistAddr],
             mimeType: "image/png"
         )
-        try await repository.upsertTokens([artistToken])
+        // Token by single-letter artist "S" whose name is a character in the target wallet
+        let unrelatedTokenByS = UnifiedToken(
+            contract: "KT1other",
+            tokenId: "99",
+            name: "Purgatory",
+            creators: ["S"],
+            mimeType: "image/png"
+        )
+        try await repository.upsertTokens([artistToken, unrelatedTokenByS])
 
         let artistFollowCriteria = GalleryFilterCriteria(targetWallet: artistAddr, walletScope: .created)
         let artistGallery = try await repository.createSmartGallery(
@@ -129,5 +137,27 @@ public struct WalletRepositoryTests {
         let artistMatches = artistGallery.matchingTokens(from: allTokens)
         try assertEqual(artistMatches.count, 1)
         try assertEqual(artistMatches.first?.name, "Artist Masterpiece")
+        try assertFalse(artistMatches.contains(where: { $0.name == "Purgatory" }))
+
+        // Domain matching for creators
+        let failure001Addr = "tz1ieNf5wjKukfRcSjwXaUNLdrnbiAWwhJCe"
+        let failureToken = UnifiedToken(
+            contract: "KT1fail",
+            tokenId: "101",
+            name: "Fault",
+            creators: [failure001Addr, "failure001.tez"],
+            mimeType: "image/gif"
+        )
+        try await repository.upsertTokens([failureToken])
+        let failureCriteria = GalleryFilterCriteria(targetWallet: failure001Addr, targetDomain: "failure001.tez", walletScope: .created)
+        let failureGallery = try await repository.createSmartGallery(
+            name: "Created by failure001.tez",
+            criteria: failureCriteria
+        )
+        let failureTokens = await repository.getTokens()
+        let failureMatches = failureGallery.matchingTokens(from: failureTokens)
+        try assertEqual(failureMatches.count, 1)
+        try assertEqual(failureMatches.first?.name, "Fault")
+        try assertFalse(failureMatches.contains(where: { $0.name == "Purgatory" }))
     }
 }

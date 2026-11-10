@@ -2498,29 +2498,13 @@ public struct AnimatedGIFView: View {
             return
         }
 
-        if let cached = ImageMemoryCache.shared.object(forKey: url as NSURL) {
-            self.image = cached
-            return
-        }
-
         isLoading = true
         hasFailed = false
 
-        do {
-            var request = URLRequest(url: url)
-            request.timeoutInterval = 15.0
-            request.setValue("desKTop/1.0", forHTTPHeaderField: "User-Agent")
-            let (data, response) = try await URLSession.shared.data(for: request)
-            if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
-               let img = NSImage(data: data) {
-                ImageMemoryCache.shared.setObject(img, forKey: url as NSURL)
-                self.image = img
-                self.isLoading = false
-            } else {
-                self.hasFailed = true
-                self.isLoading = false
-            }
-        } catch {
+        if let img = await ThumbnailPipeline.shared.loadAnimatedGIF(for: url) {
+            self.image = img
+            self.isLoading = false
+        } else {
             self.hasFailed = true
             self.isLoading = false
         }
@@ -2578,42 +2562,10 @@ public struct CachedThumbnailImageView: View {
         isLoading = true
         hasFailed = false
 
-        do {
-            var request = URLRequest(url: url)
-            request.timeoutInterval = 12.0
-            request.setValue("desKTop/1.0", forHTTPHeaderField: "User-Agent")
-            let (data, response) = try await URLSession.shared.data(for: request)
-            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
-                self.hasFailed = true
-                self.isLoading = false
-                return
-            }
-
-            // Downsample and decode frame 0 off the main thread in a detached cooperative task
-            let decoded: NSImage? = await Task.detached(priority: .userInitiated) {
-                guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
-                    return NSImage(data: data)
-                }
-                let options: [CFString: Any] = [
-                    kCGImageSourceCreateThumbnailFromImageAlways: true,
-                    kCGImageSourceShouldCacheImmediately: true,
-                    kCGImageSourceCreateThumbnailWithTransform: true,
-                    kCGImageSourceThumbnailMaxPixelSize: 600
-                ]
-                if let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) {
-                    return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
-                }
-                return NSImage(data: data)
-            }.value
-
-            if let img = decoded {
-                ImageMemoryCache.shared.setObject(img, forKey: nsURL)
-                self.loadedImage = img
-            } else {
-                self.hasFailed = true
-            }
+        if let img = await ThumbnailPipeline.shared.loadThumbnail(for: url, maxPixelSize: 400) {
+            self.loadedImage = img
             self.isLoading = false
-        } catch {
+        } else {
             self.hasFailed = true
             self.isLoading = false
         }
@@ -2901,7 +2853,7 @@ struct TokenInspectorView: View {
                     }
 
                     // 1-Click Follow Artist Smart Gallery Actions
-                    if let creatorAddr = token.creators.first {
+                    if let creatorAddr = artistProfile?.address ?? token.creators.first {
                         VStack(alignment: .leading, spacing: 6) {
                             Text("FOLLOW ARTIST")
                                 .font(.system(size: 9, weight: .black))

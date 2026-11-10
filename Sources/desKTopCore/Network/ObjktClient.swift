@@ -117,6 +117,7 @@ public actor ObjktClient {
                   short_name
                 }
                 creators {
+                  creator_address
                   holder {
                     address
                     alias
@@ -149,9 +150,7 @@ public actor ObjktClient {
             }
 
             let batch = tokens.compactMap { dict -> UnifiedToken? in
-                guard var token = parseObjktToken(from: dict) else { return nil }
-                token.isCreated = true
-                return token
+                parseObjktToken(from: dict)
             }
 
             allTokens.append(contentsOf: batch)
@@ -185,6 +184,7 @@ public actor ObjktClient {
                 supply
                 decimals
                 creators {
+                  creator_address
                   holder {
                     address
                     alias
@@ -241,6 +241,7 @@ public actor ObjktClient {
             supply
             decimals
             creators {
+              creator_address
               holder {
                 address
                 alias
@@ -304,6 +305,7 @@ public actor ObjktClient {
             supply
             decimals
             creators {
+              creator_address
               holder {
                 address
                 alias
@@ -385,11 +387,15 @@ public actor ObjktClient {
         var creators: [String] = []
         if let creatorsRaw = dict["creators"] as? [[String: Any]] {
             for c in creatorsRaw {
+                if let addr = c["creator_address"] as? String, !addr.isEmpty, !creators.contains(addr) {
+                    creators.append(addr)
+                }
                 if let holder = c["holder"] as? [String: Any] {
-                    if let alias = holder["alias"] as? String, !alias.isEmpty {
-                        creators.append(alias)
-                    } else if let addr = holder["address"] as? String {
+                    if let addr = holder["address"] as? String, !addr.isEmpty, !creators.contains(addr) {
                         creators.append(addr)
+                    }
+                    if let alias = holder["alias"] as? String, !alias.isEmpty, !creators.contains(alias) {
+                        creators.append(alias)
                     }
                 }
             }

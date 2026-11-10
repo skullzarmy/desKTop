@@ -351,7 +351,9 @@ public actor WalletRepository {
     public func followCreator(addressOrDomain: String, displayName: String? = nil) async throws -> DesktopGallery {
         let trimmed = addressOrDomain.trimmingCharacters(in: .whitespacesAndNewlines)
         let resolvedAddr: TezosAddress
+        var domainName: String? = nil
         if trimmed.hasSuffix(".tez") || trimmed.contains(".") {
+            domainName = trimmed.lowercased()
             let resolver = TezosDomainsResolver()
             if let profile = try? await resolver.resolve(domainInput: trimmed), let a = TezosAddress(profile.address) {
                 resolvedAddr = a
@@ -367,6 +369,13 @@ public actor WalletRepository {
             resolvedAddr = a
         }
 
+        if domainName == nil, let d = displayName {
+            let cleaned = d.replacingOccurrences(of: "Created by ", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if cleaned.hasSuffix(".tez") {
+                domainName = cleaned.lowercased()
+            }
+        }
+
         // Fetch minted works from Objkt GraphQL to ensure the library has them indexed
         let objktClient = ObjktClient()
         if let createdTokens = try? await objktClient.fetchCreatedTokens(creator: resolvedAddr, limit: 500), !createdTokens.isEmpty {
@@ -374,8 +383,8 @@ public actor WalletRepository {
         }
 
         let shortAddr = String(resolvedAddr.raw.prefix(6)) + "…" + String(resolvedAddr.raw.suffix(4))
-        let galleryTitle = displayName ?? "Created by \(shortAddr)"
-        let criteria = GalleryFilterCriteria(targetWallet: resolvedAddr.raw, walletScope: .created)
+        let galleryTitle = displayName ?? "Created by \(domainName ?? shortAddr)"
+        let criteria = GalleryFilterCriteria(targetWallet: resolvedAddr.raw, targetDomain: domainName, walletScope: .created)
         return try await createSmartGallery(
             name: galleryTitle,
             description: "Smart Gallery tracking created works by \(resolvedAddr.raw)",
@@ -387,7 +396,9 @@ public actor WalletRepository {
     public func followCollector(addressOrDomain: String, displayName: String? = nil) async throws -> DesktopGallery {
         let trimmed = addressOrDomain.trimmingCharacters(in: .whitespacesAndNewlines)
         let resolvedAddr: TezosAddress
+        var domainName: String? = nil
         if trimmed.hasSuffix(".tez") || trimmed.contains(".") {
+            domainName = trimmed.lowercased()
             let resolver = TezosDomainsResolver()
             if let profile = try? await resolver.resolve(domainInput: trimmed), let a = TezosAddress(profile.address) {
                 resolvedAddr = a
@@ -401,6 +412,13 @@ public actor WalletRepository {
                 throw NSError(domain: "desKTop", code: 400, userInfo: [NSLocalizedDescriptionKey: "Invalid Tezos address: \(trimmed)"])
             }
             resolvedAddr = a
+        }
+
+        if domainName == nil, let d = displayName {
+            let cleaned = d.replacingOccurrences(of: "Collected by ", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if cleaned.hasSuffix(".tez") {
+                domainName = cleaned.lowercased()
+            }
         }
 
         let tzktClient = TzKTClient()
@@ -425,15 +443,16 @@ public actor WalletRepository {
                     decimals: tagged[i].decimals,
                     aleatory: tagged[i].aleatory,
                     rawMetadata: meta,
-                    isOwned: true
+                    isOwned: false,
+                    isCreated: false
                 )
             }
             try await upsertTokens(tagged)
         }
 
         let shortAddr = String(resolvedAddr.raw.prefix(6)) + "…" + String(resolvedAddr.raw.suffix(4))
-        let galleryTitle = displayName ?? "Collected by \(shortAddr)"
-        let criteria = GalleryFilterCriteria(targetWallet: resolvedAddr.raw, walletScope: .owned)
+        let galleryTitle = displayName ?? "Collected by \(domainName ?? shortAddr)"
+        let criteria = GalleryFilterCriteria(targetWallet: resolvedAddr.raw, targetDomain: domainName, walletScope: .owned)
         return try await createSmartGallery(
             name: galleryTitle,
             description: "Smart Gallery tracking collection of \(resolvedAddr.raw)",
