@@ -30,14 +30,14 @@ public struct DesktopEngineTests {
         try assertTrue(FileManager.default.fileExists(atPath: unique1.path))
 
         // 4. DesktopCanvasWindowController
-        await MainActor.run {
+        try await MainActor.run {
             if let screen = NSScreen.main {
                 let controller = DesktopCanvasWindowController(screen: screen, displayUUID: first.uuid)
                 let panel = controller.window as? NSPanel
-                assert(panel != nil)
-                assert(panel?.hasShadow == false)
-                assert(panel?.sharingType == NSWindow.SharingType.none)
-                assert(panel?.ignoresMouseEvents == true)
+                try assertTrue(panel != nil, "Panel should exist")
+                try assertTrue(panel?.hasShadow == false, "Panel should not have shadow")
+                try assertTrue(panel?.sharingType == NSWindow.SharingType.readOnly, "Panel must be capturable in screen recordings")
+                try assertTrue(panel?.ignoresMouseEvents == true, "Panel must ignore mouse events")
             }
         }
     }

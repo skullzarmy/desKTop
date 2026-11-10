@@ -1,6 +1,7 @@
 import AppKit
 import CoreImage
 import Foundation
+import ImageIO
 
 /// Defines how desktop wallpaper letterboxing and borders are matted
 public enum WallpaperMatteMode: String, CaseIterable, Identifiable, Codable, Sendable {
@@ -51,12 +52,31 @@ public enum ArtworkMatteEngine {
         }
     }
 
-    /// Extracts dominant background color by sampling the image with CoreImage
+    /// Extracts dominant background color by sampling a lightweight ImageIO thumbnail with CoreImage
     public static func extractDominantColor(from fileURL: URL) -> NSColor? {
-        guard let image = NSImage(contentsOf: fileURL),
-              let tiffData = image.tiffRepresentation,
-              let rep = NSBitmapImageRep(data: tiffData),
-              let ciImage = CIImage(bitmapImageRep: rep) else {
+        var resolvedCI: CIImage?
+
+        // Fast ImageIO frame-0 64px thumbnail path (avoids decoding all frames of huge animated GIFs)
+        if let source = CGImageSourceCreateWithURL(fileURL as CFURL, nil) {
+            let options: [CFString: Any] = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: 64,
+                kCGImageSourceShouldCacheImmediately: false
+            ]
+            if let cgThumb = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) {
+                resolvedCI = CIImage(cgImage: cgThumb)
+            }
+        }
+
+        if resolvedCI == nil,
+           let image = NSImage(contentsOf: fileURL),
+           let tiffData = image.tiffRepresentation,
+           let rep = NSBitmapImageRep(data: tiffData) {
+            resolvedCI = CIImage(bitmapImageRep: rep)
+        }
+
+        guard let ciImage = resolvedCI else {
             return nil
         }
 

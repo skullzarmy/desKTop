@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import Combine
+import ImageIO
 import desKTopCore
 
 @MainActor
@@ -460,6 +461,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         NSApp.terminate(nil)
     }
 
+    /// Resolves a decodable flat still image URL for the given token (frame 0 for GIF/video, poster for generative)
+    private func resolveStillPosterURL(for token: UnifiedToken, primaryFileURL: URL, category: MediaCategory) async -> URL? {
+        func isDecodableImage(_ url: URL) -> Bool {
+            if let source = CGImageSourceCreateWithURL(url as CFURL, nil), CGImageSourceGetCount(source) > 0 {
+                return true
+            }
+            return NSImage(contentsOf: url) != nil
+        }
+
+        // 1. For images & GIFs/WebPs, the primary file itself decodes to frame 0
+        if category == .staticImage || category == .animatedImage || category == .vectorImage || category == .audio3d || category == .unknown {
+            if isDecodableImage(primaryFileURL) {
+                return primaryFileURL
+            }
+        }
+
+        // 2. For video assets, capture a crisp frame 0 PNG via AVAssetImageGenerator
+        if category == .video {
+            let snapDir = FileManager.default.temporaryDirectory.appendingPathComponent("desKTopSnapshots", isDirectory: true)
+            try? FileManager.default.createDirectory(at: snapDir, withIntermediateDirectories: true)
+            let snapURL = snapDir.appendingPathComponent("snap_\(token.tokenId).png")
+            if (try? await StaticSnapshotGenerator.generateVideoSnapshot(from: primaryFileURL, at: .zero, outputURL: snapURL)) != nil {
+                return snapURL
+            }
+        }
+
+        // 3. Fallback to displayUri / thumbnailUri poster for generative, video, or un-decodable files
+        for candidate in [token.displayUri, token.thumbnailUri].compactMap({ $0 }) {
+            guard UnifiedToken.isVisualUri(candidate) else { continue }
+            if let (altURL, _) = try? await vault.getOrFetchMedia(for: candidate), isDecodableImage(altURL) {
+                return altURL
+            }
+        }
+
+        return nil
+    }
+
     func setTokenAsWallpaper(_ token: UnifiedToken) async {
         guard let uri = token.primaryWallpaperUri else {
             viewModel.statusMessage = "No media available"
@@ -468,12 +506,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
         viewModel.statusMessage = "Loading \(token.name)..."
         do {
-            // Resolve wallpaper media with automatic visual fallback if artifact is raw JSON or text
+            let liveNonImageCategories: Set<MediaCategory> = [
+                .video, .fxhash, .editArt, .interactiveHtml, .aleatory, .bootloader
+            ]
+
+            // Resolve primary media with visual fallback only when an image asset isn't decodable
             var fileURL: URL
             do {
                 let (fURL, _) = try await vault.getOrFetchMedia(for: uri)
-                let isDecodable = (NSImage(contentsOf: fURL) != nil)
-                if !isDecodable && token.mediaCategory != .interactiveHtml && token.mediaCategory != .aleatory && token.mediaCategory != .bootloader {
+                if !liveNonImageCategories.contains(token.mediaCategory) && NSImage(contentsOf: fURL) == nil {
                     if let fallback = [token.displayUri, token.thumbnailUri].compactMap({ $0 }).first(where: { UnifiedToken.isVisualUri($0) && $0 != uri }) {
                         let (altURL, _) = try await vault.getOrFetchMedia(for: fallback)
                         fileURL = altURL
@@ -492,45 +533,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 }
             }
 
-            guard let screen = NSScreen.main else { return }
+            guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
             let screenID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID ?? CGMainDisplayID()
             let displayUUID = DisplayManager.persistentUUID(for: screenID)
 
-            // Resolve border / letterbox matte color based on artwork & user preference
-            let matteModeRaw = UserDefaults.standard.string(forKey: "wallpaperMatteMode") ?? WallpaperMatteMode.dynamicArtwork.rawValue
-            let matteMode = WallpaperMatteMode(rawValue: matteModeRaw) ?? .dynamicArtwork
-            let customHex = UserDefaults.standard.string(forKey: "wallpaperCustomHex")
-            let matteColor = ArtworkMatteEngine.resolveMatteColor(imageURL: fileURL, mode: matteMode, customHex: customHex)
-
-            // Detect if media is animated GIF from file header even if indexer metadata was generic
+            // Sniff actual file bytes even if indexer metadata was generic
             var effectiveCategory = token.mediaCategory
             if effectiveCategory == .staticImage || effectiveCategory == .unknown {
                 if let fileHandle = try? FileHandle(forReadingFrom: fileURL) {
                     let prefixData = fileHandle.readData(ofLength: 32)
                     try? fileHandle.close()
-                    if MediaTypeDetector.detect(data: prefixData) == .gif {
+                    let sniffed = MediaTypeDetector.detect(data: prefixData)
+                    if sniffed == .gif || sniffed == .webp {
                         effectiveCategory = .animatedImage
+                    } else if sniffed == .mp4 {
+                        effectiveCategory = .video
                     }
                 }
             }
+
+            // Resolve the flat still/poster image for this exact piece (used for both matte color and system wallpaper sync)
+            let posterURL = await resolveStillPosterURL(for: token, primaryFileURL: fileURL, category: effectiveCategory)
+
+            // Resolve border / letterbox matte color based on this piece's still image & user preference
+            let matteModeRaw = UserDefaults.standard.string(forKey: "wallpaperMatteMode") ?? WallpaperMatteMode.dynamicArtwork.rawValue
+            let matteMode = WallpaperMatteMode(rawValue: matteModeRaw) ?? .dynamicArtwork
+            let customHex = UserDefaults.standard.string(forKey: "wallpaperCustomHex")
+            let matteColor = ArtworkMatteEngine.resolveMatteColor(imageURL: posterURL ?? fileURL, mode: matteMode, customHex: customHex)
 
             // Energy & Motion tuning check:
             let disableAnimations = UserDefaults.standard.bool(forKey: "disableAnimations")
             let pauseOnBattery = UserDefaults.standard.bool(forKey: "pauseOnBattery")
             let shouldFreeze = disableAnimations || (pauseOnBattery && PowerGuardian.shared.isOnBattery) || PowerGuardian.shared.isLowPowerModeEnabled
 
-            if shouldFreeze && (effectiveCategory == .animatedImage || effectiveCategory == .video || effectiveCategory == .fxhash || effectiveCategory == .aleatory || effectiveCategory == .bootloader || effectiveCategory == .editArt || effectiveCategory == .interactiveHtml) {
-                if let controller = canvasControllers[displayUUID] {
+            if shouldFreeze && effectiveCategory != .staticImage && effectiveCategory != .vectorImage && effectiveCategory != .audio3d && effectiveCategory != .unknown {
+                for controller in canvasControllers.values {
                     controller.dismiss()
                 }
 
-                let appliedURL = try wallpaperService.setDesktopWallpaper(
-                    imageURL: fileURL,
-                    tokenId: token.tokenId,
-                    for: nil,
-                    scaling: viewModel.scaling,
-                    matteColor: matteColor
-                )
+                let appliedURL: URL
+                if let flatURL = posterURL {
+                    appliedURL = try wallpaperService.setDesktopWallpaper(
+                        imageURL: flatURL,
+                        tokenId: token.tokenId,
+                        for: nil,
+                        scaling: viewModel.scaling,
+                        matteColor: matteColor
+                    )
+                } else {
+                    appliedURL = try wallpaperService.setSolidMatteWallpaper(
+                        tokenId: token.tokenId,
+                        for: nil,
+                        matteColor: matteColor
+                    )
+                }
                 self.lastAppliedWallpaperURL = appliedURL
                 self.isExternalWallpaperActive = false
                 self.viewModel.currentToken = token
@@ -541,91 +597,98 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             }
 
             switch effectiveCategory {
-            case .animatedImage:
-                // Hardware-accelerated WebKit canvas for animated GIFs / WebP: 0% runaway CPU
-                let controller = canvasControllers[displayUUID] ?? DesktopCanvasWindowController(screen: screen, displayUUID: displayUUID)
-                canvasControllers[displayUUID] = controller
-                controller.setBackgroundColor(matteColor)
-
-                let tokenDir = fileURL.deletingLastPathComponent()
-                let webView = SandboxedArtWebView(tokenDirectory: tokenDir, frame: screen.frame)
-                let objectFit = (viewModel.scaling == .fill) ? "cover" : (viewModel.scaling == .center ? "none" : "contain")
-                let bgHex = matteColor.hexString
-                let fileName = fileURL.lastPathComponent
-                let encodedFileName = fileName.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? fileName
-                let html = """
-                <!DOCTYPE html>
-                <html>
-                <head>
-                <meta charset="utf-8">
-                <style>
-                * { margin: 0; padding: 0; box-sizing: border-box; }
-                html, body { width: 100vw; height: 100vh; overflow: hidden; background: \(bgHex); display: flex; align-items: center; justify-content: center; }
-                img { width: 100%; height: 100%; object-fit: \(objectFit); }
-                </style>
-                </head>
-                <body>
-                <img src="desktop-art://isolated/\(encodedFileName)" />
-                </body>
-                </html>
-                """
-                webView.loadHTML(html, baseURL: URL(string: "desktop-art://isolated/"))
-                controller.setCanvasContent(webView)
-                controller.present()
-
-                self.viewModel.currentToken = token
-                self.viewModel.statusMessage = "Live on \(screen.localizedName) (Animated GIF)"
-                self.isExternalWallpaperActive = false
-                UserDefaults.standard.set(token.id, forKey: "lastActiveTokenId")
-
-            case .video:
-                // Loop video seamlessly on desktop canvas
-                let controller = canvasControllers[displayUUID] ?? DesktopCanvasWindowController(screen: screen, displayUUID: displayUUID)
-                canvasControllers[displayUUID] = controller
-                controller.setBackgroundColor(matteColor)
-
-                let videoView = VideoWallpaperView(videoURL: fileURL)
-                controller.setCanvasContent(videoView)
-                controller.present()
-
-                self.viewModel.currentToken = token
-                self.viewModel.statusMessage = "Live on \(screen.localizedName) (Video Loop)"
-                self.isExternalWallpaperActive = false
-                UserDefaults.standard.set(token.id, forKey: "lastActiveTokenId")
-
-            case .fxhash, .aleatory, .bootloader, .editArt, .interactiveHtml:
-                // Run generative WebGL/HTML engine on desktop canvas
-                let controller = canvasControllers[displayUUID] ?? DesktopCanvasWindowController(screen: screen, displayUUID: displayUUID)
-                canvasControllers[displayUUID] = controller
-                controller.setBackgroundColor(matteColor)
-
-                let webView = SandboxedArtWebView(frame: screen.frame)
-                if token.mediaCategory == .aleatory, let alea = token.aleatory, let code = alea.code {
-                    let decompressed = (try? AleatoryRuntime.decompress(code: code, encoding: alea.encoding)) ?? code
-                    let harness = AleatoryRuntime.composeHTMLHarness(decompressedScript: decompressed, seed: alea.seed ?? "0")
-                    webView.loadHTML(harness)
-                } else if token.mediaCategory == .bootloader, let desc = token.description {
-                    let html = BootloaderRuntime.composeHTMLDocument(script: desc, seed: "0")
-                    webView.loadHTML(html)
-                } else {
-                    webView.webView.load(URLRequest(url: fileURL))
+            case .animatedImage, .video, .fxhash, .aleatory, .bootloader, .editArt, .interactiveHtml:
+                // Always synchronize the underlying macOS desktop wallpaper to the flat image of this SAME piece
+                // so Mission Control, Spaces switches, Lock Screen, and wallpaper settings never show an old piece underneath.
+                if let flatURL = posterURL,
+                   let appliedURL = try? wallpaperService.setDesktopWallpaper(
+                    imageURL: flatURL,
+                    tokenId: token.tokenId,
+                    for: nil,
+                    scaling: viewModel.scaling,
+                    matteColor: matteColor
+                   ) {
+                    self.lastAppliedWallpaperURL = appliedURL
+                } else if let appliedURL = try? wallpaperService.setSolidMatteWallpaper(
+                    tokenId: token.tokenId,
+                    for: nil,
+                    matteColor: matteColor
+                ) {
+                    self.lastAppliedWallpaperURL = appliedURL
                 }
-                controller.setCanvasContent(webView)
-                controller.present()
 
+                let controller = canvasControllers[displayUUID] ?? DesktopCanvasWindowController(screen: screen, displayUUID: displayUUID)
+                canvasControllers[displayUUID] = controller
+                controller.updateFrame(for: screen)
+                controller.setBackgroundColor(matteColor)
+
+                let modeLabel: String
+                switch effectiveCategory {
+                case .animatedImage:
+                    // Hardware-accelerated WebKit canvas for animated GIFs / WebP
+                    let tokenDir = fileURL.deletingLastPathComponent()
+                    let webView = SandboxedArtWebView(tokenDirectory: tokenDir, frame: screen.frame)
+                    let objectFit = (viewModel.scaling == .fill) ? "cover" : (viewModel.scaling == .center ? "none" : "contain")
+                    let bgHex = matteColor.hexString
+                    let fileName = fileURL.lastPathComponent
+                    let encodedFileName = fileName.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? fileName
+                    let html = """
+                    <!DOCTYPE html>
+                    <html>
+                    <head>
+                    <meta charset="utf-8">
+                    <style>
+                    * { margin: 0; padding: 0; box-sizing: border-box; }
+                    html, body { width: 100vw; height: 100vh; overflow: hidden; background: \(bgHex); display: flex; align-items: center; justify-content: center; }
+                    img { width: 100%; height: 100%; object-fit: \(objectFit); }
+                    </style>
+                    </head>
+                    <body>
+                    <img src="desktop-art://isolated/\(encodedFileName)" />
+                    </body>
+                    </html>
+                    """
+                    webView.loadHTML(html, baseURL: URL(string: "desktop-art://isolated/"))
+                    controller.setCanvasContent(webView)
+                    modeLabel = "Animated GIF"
+
+                case .video:
+                    let muteAudio = UserDefaults.standard.object(forKey: "muteVideoAudio") == nil ? true : UserDefaults.standard.bool(forKey: "muteVideoAudio")
+                    let videoView = VideoWallpaperView(videoURL: fileURL, isMuted: muteAudio)
+                    controller.setCanvasContent(videoView)
+                    modeLabel = "Video Loop"
+
+                default:
+                    // Generative WebGL/HTML engine on desktop canvas
+                    let webView = SandboxedArtWebView(frame: screen.frame)
+                    if token.mediaCategory == .aleatory, let alea = token.aleatory, let code = alea.code {
+                        let decompressed = (try? AleatoryRuntime.decompress(code: code, encoding: alea.encoding)) ?? code
+                        let harness = AleatoryRuntime.composeHTMLHarness(decompressedScript: decompressed, seed: alea.seed ?? "0")
+                        webView.loadHTML(harness)
+                    } else if token.mediaCategory == .bootloader, let desc = token.description {
+                        let html = BootloaderRuntime.composeHTMLDocument(script: desc, seed: "0")
+                        webView.loadHTML(html)
+                    } else {
+                        webView.webView.load(URLRequest(url: fileURL))
+                    }
+                    controller.setCanvasContent(webView)
+                    modeLabel = "Generative"
+                }
+
+                controller.present()
                 self.viewModel.currentToken = token
-                self.viewModel.statusMessage = "Live on \(screen.localizedName) (Generative)"
+                self.viewModel.statusMessage = "Live on \(screen.localizedName) (\(modeLabel))"
                 self.isExternalWallpaperActive = false
                 UserDefaults.standard.set(token.id, forKey: "lastActiveTokenId")
 
             default:
-                // Still wallpaper: dismiss dynamic canvas and set image via NSWorkspace
-                if let controller = canvasControllers[displayUUID] {
+                // Still wallpaper: dismiss dynamic canvases and set image via NSWorkspace
+                for controller in canvasControllers.values {
                     controller.dismiss()
                 }
 
                 let appliedURL = try wallpaperService.setDesktopWallpaper(
-                    imageURL: fileURL,
+                    imageURL: posterURL ?? fileURL,
                     tokenId: token.tokenId,
                     for: nil,
                     scaling: viewModel.scaling,

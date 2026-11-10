@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import CoreGraphics
 import CoreImage
+import ImageIO
 
 public enum WallpaperScaling: String, Codable, Sendable {
     case fit = "Fit (Aspect Fit with Ambient Blur)"
@@ -66,6 +67,25 @@ public final class StillWallpaperService: Sendable {
         }
     }
 
+    /// Sets a solid matte background wallpaper (used as fallback when live generative art has no still poster image)
+    @MainActor
+    @discardableResult
+    public func setSolidMatteWallpaper(
+        tokenId: String,
+        for targetScreen: NSScreen? = nil,
+        matteColor: NSColor
+    ) throws -> URL {
+        return try applyCompositedWallpaper(
+            cgImage: nil,
+            nsImage: nil,
+            imageSize: nil,
+            tokenId: tokenId,
+            for: targetScreen,
+            scaling: .fit,
+            matteColor: matteColor
+        )
+    }
+
     /// Sets the desktop wallpaper for a specific screen (or all screens if nil), compositing to exact physical device dimensions
     /// so that .fill, .fit, and .center are guaranteed to work across all macOS versions regardless of
     /// deprecated NSWorkspace DesktopImageOptionKey behavior.
@@ -78,10 +98,58 @@ public final class StillWallpaperService: Sendable {
         scaling: WallpaperScaling = .fit,
         matteColor: NSColor? = nil
     ) throws -> URL {
-        guard let sourceImage = NSImage(contentsOf: imageURL), sourceImage.isValid else {
-            throw WallpaperError.imageLoadFailed
+        // Fast frame-0 decode via ImageIO (avoids decoding all frames of animated GIFs just to extract a flat poster)
+        var frameZeroCG: CGImage?
+        if let source = CGImageSourceCreateWithURL(imageURL as CFURL, nil) {
+            let options: [CFString: Any] = [kCGImageSourceShouldCacheImmediately: false]
+            frameZeroCG = CGImageSourceCreateImageAtIndex(source, 0, options as CFDictionary)
         }
 
+        var resolvedNSImage: NSImage?
+        let imageDimensions: CGSize
+        if let cgImg = frameZeroCG {
+            imageDimensions = CGSize(width: cgImg.width, height: cgImg.height)
+        } else {
+            guard let sourceImage = NSImage(contentsOf: imageURL), sourceImage.isValid else {
+                throw WallpaperError.imageLoadFailed
+            }
+            resolvedNSImage = sourceImage
+            var imageWidth = sourceImage.size.width
+            var imageHeight = sourceImage.size.height
+            for rep in sourceImage.representations {
+                if rep.pixelsWide > 0 && rep.pixelsHigh > 0 {
+                    imageWidth = CGFloat(rep.pixelsWide)
+                    imageHeight = CGFloat(rep.pixelsHigh)
+                    break
+                }
+            }
+            guard imageWidth > 0 && imageHeight > 0 else {
+                throw WallpaperError.imageLoadFailed
+            }
+            imageDimensions = CGSize(width: imageWidth, height: imageHeight)
+        }
+
+        return try applyCompositedWallpaper(
+            cgImage: frameZeroCG,
+            nsImage: resolvedNSImage,
+            imageSize: imageDimensions,
+            tokenId: tokenId,
+            for: targetScreen,
+            scaling: scaling,
+            matteColor: matteColor
+        )
+    }
+
+    @MainActor
+    private func applyCompositedWallpaper(
+        cgImage: CGImage?,
+        nsImage: NSImage?,
+        imageSize: CGSize?,
+        tokenId: String,
+        for targetScreen: NSScreen?,
+        scaling: WallpaperScaling,
+        matteColor: NSColor?
+    ) throws -> URL {
         cleanOldWallpapers()
 
         let screensToUpdate = targetScreen.map { [$0] } ?? (NSScreen.screens.isEmpty ? [NSScreen.main].compactMap { $0 } : NSScreen.screens)
@@ -99,50 +167,6 @@ public final class StillWallpaperService: Sendable {
             // Target pixel dimensions matching physical Retina display resolution
             let targetWidth = max(Int(screen.frame.width * screen.backingScaleFactor), 1)
             let targetHeight = max(Int(screen.frame.height * screen.backingScaleFactor), 1)
-
-            // Get true native pixel dimensions of the source artwork
-            var imageWidth = sourceImage.size.width
-            var imageHeight = sourceImage.size.height
-            for rep in sourceImage.representations {
-                if rep.pixelsWide > 0 && rep.pixelsHigh > 0 {
-                    imageWidth = CGFloat(rep.pixelsWide)
-                    imageHeight = CGFloat(rep.pixelsHigh)
-                    break
-                }
-            }
-            guard imageWidth > 0 && imageHeight > 0 else {
-                throw WallpaperError.imageLoadFailed
-            }
-
-            // Calculate drawing rectangle based on chosen framing mode
-            let drawRect: CGRect
-            switch scaling {
-            case .fill:
-                // Aspect Fill: scale up so artwork completely covers the entire screen, cropping any overhang
-                let scale = max(CGFloat(targetWidth) / imageWidth, CGFloat(targetHeight) / imageHeight)
-                let drawW = imageWidth * scale
-                let drawH = imageHeight * scale
-                let drawX = (CGFloat(targetWidth) - drawW) / 2.0
-                let drawY = (CGFloat(targetHeight) - drawH) / 2.0
-                drawRect = CGRect(x: drawX, y: drawY, width: drawW, height: drawH)
-
-            case .fit:
-                // Aspect Fit: scale proportionally so entire artwork is visible, letterboxed with matteColor
-                let scale = min(CGFloat(targetWidth) / imageWidth, CGFloat(targetHeight) / imageHeight)
-                let drawW = imageWidth * scale
-                let drawH = imageHeight * scale
-                let drawX = (CGFloat(targetWidth) - drawW) / 2.0
-                let drawY = (CGFloat(targetHeight) - drawH) / 2.0
-                drawRect = CGRect(x: drawX, y: drawY, width: drawW, height: drawH)
-
-            case .center:
-                // Center: 1:1 native pixel rendering centered on the screen canvas
-                let drawW = imageWidth
-                let drawH = imageHeight
-                let drawX = (CGFloat(targetWidth) - drawW) / 2.0
-                let drawY = (CGFloat(targetHeight) - drawH) / 2.0
-                drawRect = CGRect(x: drawX, y: drawY, width: drawW, height: drawH)
-            }
 
             // Create bitmap context matching target display dimensions
             let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
@@ -163,16 +187,51 @@ public final class StillWallpaperService: Sendable {
             context.setFillColor(bgNSColor.cgColor)
             context.fill(CGRect(x: 0, y: 0, width: targetWidth, height: targetHeight))
 
-            // 2. High-quality interpolation for artwork drawing
-            context.interpolationQuality = .high
-            if let cgImage = sourceImage.cgImage(forProposedRect: nil, context: nil, hints: nil) {
-                context.draw(cgImage, in: drawRect)
-            } else {
-                NSGraphicsContext.saveGraphicsState()
-                let nsContext = NSGraphicsContext(cgContext: context, flipped: false)
-                NSGraphicsContext.current = nsContext
-                sourceImage.draw(in: drawRect)
-                NSGraphicsContext.restoreGraphicsState()
+            // 2. Draw artwork if provided
+            if let imageSize = imageSize {
+                let imageWidth = imageSize.width
+                let imageHeight = imageSize.height
+
+                let drawRect: CGRect
+                switch scaling {
+                case .fill:
+                    let scale = max(CGFloat(targetWidth) / imageWidth, CGFloat(targetHeight) / imageHeight)
+                    let drawW = imageWidth * scale
+                    let drawH = imageHeight * scale
+                    let drawX = (CGFloat(targetWidth) - drawW) / 2.0
+                    let drawY = (CGFloat(targetHeight) - drawH) / 2.0
+                    drawRect = CGRect(x: drawX, y: drawY, width: drawW, height: drawH)
+
+                case .fit:
+                    let scale = min(CGFloat(targetWidth) / imageWidth, CGFloat(targetHeight) / imageHeight)
+                    let drawW = imageWidth * scale
+                    let drawH = imageHeight * scale
+                    let drawX = (CGFloat(targetWidth) - drawW) / 2.0
+                    let drawY = (CGFloat(targetHeight) - drawH) / 2.0
+                    drawRect = CGRect(x: drawX, y: drawY, width: drawW, height: drawH)
+
+                case .center:
+                    let drawW = imageWidth
+                    let drawH = imageHeight
+                    let drawX = (CGFloat(targetWidth) - drawW) / 2.0
+                    let drawY = (CGFloat(targetHeight) - drawH) / 2.0
+                    drawRect = CGRect(x: drawX, y: drawY, width: drawW, height: drawH)
+                }
+
+                context.interpolationQuality = .high
+                if let directCG = cgImage {
+                    context.draw(directCG, in: drawRect)
+                } else if let sourceImage = nsImage {
+                    if let cgFromNS = sourceImage.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+                        context.draw(cgFromNS, in: drawRect)
+                    } else {
+                        NSGraphicsContext.saveGraphicsState()
+                        let nsContext = NSGraphicsContext(cgContext: context, flipped: false)
+                        NSGraphicsContext.current = nsContext
+                        sourceImage.draw(in: drawRect)
+                        NSGraphicsContext.restoreGraphicsState()
+                    }
+                }
             }
 
             guard let compositedCGImage = context.makeImage() else {
@@ -180,7 +239,6 @@ public final class StillWallpaperService: Sendable {
             }
 
             let bitmapRep = NSBitmapImageRep(cgImage: compositedCGImage)
-            // Ensure size reflects point dimensions so macOS recognizes Retina DPI
             bitmapRep.size = screen.frame.size
             guard let pngData = bitmapRep.representation(using: .png, properties: [:]) else {
                 throw WallpaperError.renderFailed

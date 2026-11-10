@@ -31,7 +31,8 @@ public final class DesktopCanvasWindowController: NSWindowController {
     private func setupPanelProperties(screen: NSScreen) {
         // Position directly above desktop wallpaper level (-2147483623) and safely below desktop icons (-2147483603)
         panel.level = NSWindow.Level(Int(CGWindowLevelForKey(.desktopWindow)) + 1)
-        panel.sharingType = .none
+        // Allow screen recordings, screenshots, and screen shares to capture the live desktop canvas
+        panel.sharingType = .readOnly
         panel.hasShadow = false
         panel.isOpaque = true
         panel.backgroundColor = .black
@@ -48,6 +49,13 @@ public final class DesktopCanvasWindowController: NSWindowController {
         ]
 
         panel.setFrame(screen.frame, display: true)
+    }
+
+    @MainActor
+    public func updateFrame(for screen: NSScreen) {
+        if panel.frame != screen.frame {
+            panel.setFrame(screen.frame, display: true)
+        }
     }
 
     @MainActor
