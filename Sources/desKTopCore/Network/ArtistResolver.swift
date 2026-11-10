@@ -91,7 +91,14 @@ public actor ArtistResolver {
     private let session: URLSession
 
     private var cache: [String: ArtistProfile] = [:]
+    private var attemptedAddresses: Set<String> = []
     private var cacheFileURL: URL?
+
+    private static func isValidTezosAddress(_ str: String) -> Bool {
+        guard str.count == 36 else { return false }
+        let lower = str.lowercased()
+        return lower.hasPrefix("tz1") || lower.hasPrefix("tz2") || lower.hasPrefix("tz3") || lower.hasPrefix("kt1")
+    }
 
     /// Synchronously loads all cached artist profiles from persistent disk or application bundle
     public static func loadCachedProfiles() -> [String: ArtistProfile] {
@@ -137,13 +144,15 @@ public actor ArtistResolver {
         var toFetch: [String] = []
 
         for addr in addresses {
-            let lower = addr.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let trimmed = addr.trimmingCharacters(in: .whitespacesAndNewlines)
+            let lower = trimmed.lowercased()
             guard !lower.isEmpty else { continue }
             if let cached = cache[lower] {
                 results[addr] = cached
                 results[lower] = cached
-            } else {
-                toFetch.append(addr)
+            } else if Self.isValidTezosAddress(trimmed) && !attemptedAddresses.contains(lower) {
+                attemptedAddresses.insert(lower)
+                toFetch.append(trimmed)
             }
         }
 

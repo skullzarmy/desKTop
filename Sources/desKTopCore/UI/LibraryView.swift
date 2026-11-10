@@ -2,7 +2,7 @@ import SwiftUI
 import AppKit
 
 /// Top-level sidebar selection targets
-public enum LibrarySidebarItem: Hashable {
+public enum LibrarySidebarItem: Hashable, Sendable {
     case allArt
     case owned
     case created
@@ -14,7 +14,7 @@ public enum LibrarySidebarItem: Hashable {
 }
 
 /// Format category filter (UI filter, NOT hardcoded tabs)
-public enum FormatFilter: String, CaseIterable, Identifiable {
+public enum FormatFilter: String, CaseIterable, Identifiable, Sendable {
     case all = "All Formats"
     case still = "Still Images"
     case video = "Video & Loops"
@@ -37,7 +37,7 @@ public enum FormatFilter: String, CaseIterable, Identifiable {
 }
 
 /// Sort fields for artwork collection
-public enum TokenSortOption: String, CaseIterable, Identifiable {
+public enum TokenSortOption: String, CaseIterable, Identifiable, Sendable {
     case dateAcquired = "Date Added"
     case mintDate = "Mint Date (Token ID)"
     case title = "Title (A–Z)"
@@ -47,7 +47,7 @@ public enum TokenSortOption: String, CaseIterable, Identifiable {
 }
 
 /// Direction for sorting
-public enum SortDirection: String, CaseIterable, Identifiable {
+public enum SortDirection: String, CaseIterable, Identifiable, Sendable {
     case ascending = "Ascending"
     case descending = "Descending"
 
@@ -62,7 +62,7 @@ public enum SortDirection: String, CaseIterable, Identifiable {
 }
 
 /// Summary of unique contracts in the collection
-public struct CollectionContractItem: Identifiable, Hashable {
+public struct CollectionContractItem: Identifiable, Hashable, Sendable {
     public var id: String { contract }
     public let contract: String
     public let displayName: String
@@ -98,8 +98,18 @@ public struct LibraryView: View {
     @State private var galleries: [DesktopGallery] = []
     @State private var objktCurations: [ObjktGallerySummary] = []
     @State private var collectionNames: [String: String] = [:]
-    @State private var artistProfiles: [String: ArtistProfile] = ArtistResolver.loadCachedProfiles()
-    @State private var fxhashProjects: [String: FxhashProjectInfo] = FxhashResolver.loadCachedProjects()
+    @State private var artistProfiles: [String: ArtistProfile] = [:]
+    @State private var fxhashProjects: [String: FxhashProjectInfo] = [:]
+
+    // Cached off-main-thread derived sidebar & filter state
+    @State private var ownedCount: Int = 0
+    @State private var createdCount: Int = 0
+    @State private var cachedUniqueCollections: [CollectionContractItem] = []
+    @State private var galleryMatchCounts: [UUID: Int] = [:]
+    @State private var hasLoadedDiskCaches: Bool = false
+    @State private var filterSortTask: Task<Void, Never>? = nil
+    @State private var derivedStatsTask: Task<Void, Never>? = nil
+    @State private var backgroundResolveTask: Task<Void, Never>? = nil
 
     // Mixed Context Collection Scope (In Library vs Entire Collection on-chain)
     @State private var collectionScope: CollectionRotationScope = .inLibrary
@@ -216,6 +226,28 @@ public struct LibraryView: View {
     }
 
     public func artistDisplayName(for addressOrName: String) -> String {
+        return Self.staticArtistDisplayName(for: addressOrName, artistProfiles: artistProfiles)
+    }
+
+    public func artistProfile(for addressOrName: String) -> ArtistProfile? {
+        return Self.staticArtistProfile(for: addressOrName, artistProfiles: artistProfiles)
+    }
+
+    public func resolvedProjectName(for token: UnifiedToken) -> String {
+        return Self.staticResolvedProjectName(for: token, fxhashProjects: fxhashProjects)
+    }
+
+    public func collectionTokenMatches(token: UnifiedToken, key: String) -> Bool {
+        return Self.staticCollectionTokenMatches(token: token, key: key, fxhashProjects: fxhashProjects)
+    }
+
+    public func resolvedName(for contract: String) -> String {
+        return Self.staticResolvedName(for: contract, collectionNames: collectionNames)
+    }
+
+    // MARK: - Pure Static Helpers (Safe Off-Main-Actor)
+
+    private nonisolated static func staticArtistDisplayName(for addressOrName: String, artistProfiles: [String: ArtistProfile]) -> String {
         let trimmed = addressOrName.trimmingCharacters(in: .whitespacesAndNewlines)
         if let profile = artistProfiles[trimmed] ?? artistProfiles[trimmed.lowercased()] {
             return profile.displayName
@@ -224,14 +256,39 @@ public struct LibraryView: View {
         return String(trimmed.prefix(6)) + "…" + String(trimmed.suffix(4))
     }
 
-    public func artistProfile(for addressOrName: String) -> ArtistProfile? {
+    private nonisolated static func staticArtistProfile(for addressOrName: String, artistProfiles: [String: ArtistProfile]) -> ArtistProfile? {
         let trimmed = addressOrName.trimmingCharacters(in: .whitespacesAndNewlines)
         return artistProfiles[trimmed] ?? artistProfiles[trimmed.lowercased()]
     }
 
-    private func isTokenCreatedByUser(_ token: UnifiedToken) -> Bool {
+    private nonisolated static func staticResolvedProjectName(for token: UnifiedToken, fxhashProjects: [String: FxhashProjectInfo]) -> String {
+        if let info = fxhashProjects[token.id], let p = info.projectName, !p.isEmpty {
+            return p
+        }
+        return token.fxhashProjectName ?? "fxhash (\(token.fxhashVersion ?? "Generative"))"
+    }
+
+    private nonisolated static func staticCollectionTokenMatches(token: UnifiedToken, key: String, fxhashProjects: [String: FxhashProjectInfo]) -> Bool {
+        if key.hasPrefix("fxhash:") {
+            let targetProj = String(key.dropFirst(7)).lowercased()
+            return token.isFxhash && (staticResolvedProjectName(for: token, fxhashProjects: fxhashProjects).lowercased() == targetProj)
+        }
+        return token.contract.caseInsensitiveCompare(key) == .orderedSame
+    }
+
+    private nonisolated static func staticResolvedName(for contract: String, collectionNames: [String: String]) -> String {
+        if contract.hasPrefix("fxhash:") {
+            return String(contract.dropFirst(7))
+        }
+        let lower = contract.lowercased()
+        if let name = collectionNames[contract] ?? collectionNames[lower] {
+            return name
+        }
+        return staticDefaultContractAlias(for: contract)
+    }
+
+    private nonisolated static func staticIsTokenCreatedByUser(_ token: UnifiedToken, sourceAddresses: Set<String>) -> Bool {
         if token.isCreated { return true }
-        let sourceAddresses = Set(sources.compactMap { $0.walletAddress?.lowercased() })
         for creator in token.creators {
             if sourceAddresses.contains(creator.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) {
                 return true
@@ -240,221 +297,263 @@ public struct LibraryView: View {
         return false
     }
 
-    private var ownedTokensCount: Int {
-        tokens.filter { $0.isOwned }.count
-    }
-
-    private var createdTokensCount: Int {
-        tokens.filter { $0.isCreated || isTokenCreatedByUser($0) }.count
-    }
-
-    // MARK: - Filtered Tokens Calculation
+    // MARK: - Asynchronous Background Filtering, Sorting & Derived Stats
 
     private func updateDisplayedTokens() {
+        filterSortTask?.cancel()
         renderLimit = 80
 
-        // 1. Filter by top-level sidebar selection
-        var baseTokens: [UnifiedToken]
-        switch selectedSidebarItem {
-        case .allArt:
-            baseTokens = tokens
-        case .owned:
-            baseTokens = tokens.filter { $0.isOwned }
-        case .created:
-            baseTokens = tokens.filter { $0.isCreated || isTokenCreatedByUser($0) }
-        case .collections:
-            baseTokens = tokens
-        case .customGallery(let gid):
-            if let gallery = galleries.first(where: { $0.id == gid }) {
-                baseTokens = gallery.matchingTokens(from: tokens, artistDisplayName: { artistDisplayName(for: $0) })
-            } else {
-                baseTokens = []
-            }
-        case .objktCuration(let cid):
-            baseTokens = tokens.filter { $0.rawMetadata?["curationId"] == cid }
-        case .collection(let key):
-            if collectionScope == .entireCollection {
-                if let entire = entireCollectionTokens[key] ?? entireCollectionTokens[key.lowercased()], !entire.isEmpty {
-                    baseTokens = entire
+        let snapTokens = tokens
+        let snapSources = sources
+        let snapGalleries = galleries
+        let snapEntire = entireCollectionTokens
+        let snapColNames = collectionNames
+        let snapArtistProfiles = artistProfiles
+        let snapFxhash = fxhashProjects
+        let snapSidebar = selectedSidebarItem
+        let snapColScope = collectionScope
+        let snapSrcScope = sourceScope
+        let snapSearch = searchText
+        let snapFormat = selectedFormatFilter
+        let snapContract = selectedContractFilter
+        let snapSort = sortOption
+        let snapDir = sortDirection
+
+        filterSortTask = Task.detached(priority: .userInitiated) {
+            if Task.isCancelled { return }
+            let sourceAddresses = Set(snapSources.compactMap { $0.walletAddress?.lowercased() })
+
+            // 1. Filter by top-level sidebar selection
+            var baseTokens: [UnifiedToken]
+            switch snapSidebar {
+            case .allArt:
+                baseTokens = snapTokens
+            case .owned:
+                baseTokens = snapTokens.filter { $0.isOwned }
+            case .created:
+                baseTokens = snapTokens.filter { $0.isCreated || Self.staticIsTokenCreatedByUser($0, sourceAddresses: sourceAddresses) }
+            case .collections:
+                baseTokens = snapTokens
+            case .customGallery(let gid):
+                if let gallery = snapGalleries.first(where: { $0.id == gid }) {
+                    baseTokens = gallery.matchingTokens(from: snapTokens, artistDisplayName: {
+                        Self.staticArtistDisplayName(for: $0, artistProfiles: snapArtistProfiles)
+                    })
                 } else {
-                    baseTokens = tokens.filter { collectionTokenMatches(token: $0, key: key) }
+                    baseTokens = []
                 }
-            } else {
-                baseTokens = tokens.filter { collectionTokenMatches(token: $0, key: key) }
-            }
-        case .source(let sid):
-            if let src = sources.first(where: { $0.id == sid }), let addr = src.walletAddress?.lowercased() {
-                if sourceScope == .created {
-                    baseTokens = tokens.filter { t in
-                        t.creators.contains { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == addr }
+            case .objktCuration(let cid):
+                baseTokens = snapTokens.filter { $0.rawMetadata?["curationId"] == cid }
+            case .collection(let key):
+                if snapColScope == .entireCollection {
+                    if let entire = snapEntire[key] ?? snapEntire[key.lowercased()], !entire.isEmpty {
+                        baseTokens = entire
+                    } else {
+                        baseTokens = snapTokens.filter { Self.staticCollectionTokenMatches(token: $0, key: key, fxhashProjects: snapFxhash) }
                     }
                 } else {
-                    baseTokens = tokens.filter { t in
-                        t.isOwned && (t.rawMetadata?["sourceWallet"]?.lowercased() == addr || sources.count == 1)
-                    }
+                    baseTokens = snapTokens.filter { Self.staticCollectionTokenMatches(token: $0, key: key, fxhashProjects: snapFxhash) }
                 }
-            } else {
-                baseTokens = []
+            case .source(let sid):
+                if let src = snapSources.first(where: { $0.id == sid }), let addr = src.walletAddress?.lowercased() {
+                    if snapSrcScope == .created {
+                        baseTokens = snapTokens.filter { t in
+                            t.creators.contains { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == addr }
+                        }
+                    } else {
+                        baseTokens = snapTokens.filter { t in
+                            t.isOwned && (t.rawMetadata?["sourceWallet"]?.lowercased() == addr || snapSources.count == 1)
+                        }
+                    }
+                } else {
+                    baseTokens = []
+                }
             }
-        }
 
-        // 2. Filter by search text
-        if !searchText.isEmpty {
-            baseTokens = baseTokens.filter { token in
-                token.name.localizedCaseInsensitiveContains(searchText) ||
-                token.creators.contains(where: { creator in
-                    creator.localizedCaseInsensitiveContains(searchText) ||
-                    artistDisplayName(for: creator).localizedCaseInsensitiveContains(searchText) ||
-                    (artistProfile(for: creator)?.tzdomain?.localizedCaseInsensitiveContains(searchText) ?? false) ||
-                    (artistProfile(for: creator)?.twitterHandle?.localizedCaseInsensitiveContains(searchText) ?? false)
-                }) ||
-                token.contract.localizedCaseInsensitiveContains(searchText) ||
-                (resolvedName(for: token.contract).localizedCaseInsensitiveContains(searchText)) ||
-                token.tokenId.contains(searchText)
+            if Task.isCancelled { return }
+
+            // 2. Filter by search text
+            if !snapSearch.isEmpty {
+                baseTokens = baseTokens.filter { token in
+                    token.name.localizedCaseInsensitiveContains(snapSearch) ||
+                    token.creators.contains(where: { creator in
+                        creator.localizedCaseInsensitiveContains(snapSearch) ||
+                        Self.staticArtistDisplayName(for: creator, artistProfiles: snapArtistProfiles).localizedCaseInsensitiveContains(snapSearch) ||
+                        (Self.staticArtistProfile(for: creator, artistProfiles: snapArtistProfiles)?.tzdomain?.localizedCaseInsensitiveContains(snapSearch) ?? false) ||
+                        (Self.staticArtistProfile(for: creator, artistProfiles: snapArtistProfiles)?.twitterHandle?.localizedCaseInsensitiveContains(snapSearch) ?? false)
+                    }) ||
+                    token.contract.localizedCaseInsensitiveContains(snapSearch) ||
+                    Self.staticResolvedName(for: token.contract, collectionNames: snapColNames).localizedCaseInsensitiveContains(snapSearch) ||
+                    token.tokenId.contains(snapSearch)
+                }
             }
-        }
 
-        // 3. Filter by format filter
-        if selectedFormatFilter != .all {
-            baseTokens = baseTokens.filter { selectedFormatFilter.matches($0.mediaCategory) }
-        }
+            // 3. Filter by format filter
+            if snapFormat != .all {
+                baseTokens = baseTokens.filter { snapFormat.matches($0.mediaCategory) }
+            }
 
-        // 4. Filter by collection filter
-        if let contractFilter = selectedContractFilter, !contractFilter.isEmpty {
-            baseTokens = baseTokens.filter { $0.contract.lowercased() == contractFilter.lowercased() }
-        }
+            // 4. Filter by collection filter
+            if let contractFilter = snapContract, !contractFilter.isEmpty {
+                let lowerFilter = contractFilter.lowercased()
+                baseTokens = baseTokens.filter { $0.contract.lowercased() == lowerFilter }
+            }
 
-        // 5. Apply sorting
-        let isAsc = (sortDirection == .ascending)
-        baseTokens.sort { a, b in
-            switch sortOption {
+            if Task.isCancelled { return }
+
+            // 5. Schwartzian Transform Sort (computes acquiredDate ONCE per token, not O(N log N) times)
+            let isAsc = (snapDir == .ascending)
+            let sortedTokens: [UnifiedToken]
+            switch snapSort {
             case .dateAcquired:
-                let dateA = a.acquiredDate ?? Date.distantPast
-                let dateB = b.acquiredDate ?? Date.distantPast
-                if dateA != dateB {
-                    return isAsc ? (dateA < dateB) : (dateA > dateB)
+                let keyed = baseTokens.map { token -> (token: UnifiedToken, ts: TimeInterval, idInt: Int) in
+                    let ts = (token.acquiredDate ?? Date.distantPast).timeIntervalSinceReferenceDate
+                    return (token, ts, Int(token.tokenId) ?? 0)
                 }
-                let idA = Int(a.tokenId) ?? 0
-                let idB = Int(b.tokenId) ?? 0
-                return isAsc ? (idA < idB) : (idA > idB)
+                let sortedKeyed = keyed.sorted { a, b in
+                    if a.ts != b.ts {
+                        return isAsc ? (a.ts < b.ts) : (a.ts > b.ts)
+                    }
+                    return isAsc ? (a.idInt < b.idInt) : (a.idInt > b.idInt)
+                }
+                sortedTokens = sortedKeyed.map(\.token)
 
             case .mintDate:
-                let idA = Int(a.tokenId) ?? 0
-                let idB = Int(b.tokenId) ?? 0
-                return isAsc ? (idA < idB) : (idA > idB)
+                let keyed = baseTokens.map { ($0, Int($0.tokenId) ?? 0) }
+                sortedTokens = keyed.sorted { isAsc ? ($0.1 < $1.1) : ($0.1 > $1.1) }.map(\.0)
 
             case .title:
-                let compare = a.name.localizedCaseInsensitiveCompare(b.name)
-                return isAsc ? (compare == .orderedAscending) : (compare == .orderedDescending)
+                sortedTokens = baseTokens.sorted { a, b in
+                    let compare = a.name.localizedCaseInsensitiveCompare(b.name)
+                    return isAsc ? (compare == .orderedAscending) : (compare == .orderedDescending)
+                }
 
             case .supply:
-                let supA = a.supply ?? 1
-                let supB = b.supply ?? 1
-                return isAsc ? (supA < supB) : (supA > supB)
+                sortedTokens = baseTokens.sorted { a, b in
+                    let supA = a.supply ?? 1
+                    let supB = b.supply ?? 1
+                    return isAsc ? (supA < supB) : (supA > supB)
+                }
+            }
+
+            if Task.isCancelled { return }
+            await MainActor.run {
+                self.displayedTokens = sortedTokens
             }
         }
-
-        self.displayedTokens = baseTokens
     }
 
-    public func resolvedProjectName(for token: UnifiedToken) -> String {
-        if let info = fxhashProjects[token.id], let p = info.projectName, !p.isEmpty {
-            return p
-        }
-        return token.fxhashProjectName ?? "fxhash (\(token.fxhashVersion ?? "Generative"))"
-    }
+    /// Computes ownedCount, createdCount, uniqueCollections, and gallery match counts off the main thread
+    private func recomputeDerivedStats() {
+        derivedStatsTask?.cancel()
 
-    public func collectionTokenMatches(token: UnifiedToken, key: String) -> Bool {
-        if key.hasPrefix("fxhash:") {
-            let targetProj = String(key.dropFirst(7)).lowercased()
-            return token.isFxhash && (resolvedProjectName(for: token).lowercased() == targetProj)
-        }
-        return token.contract.caseInsensitiveCompare(key) == .orderedSame
-    }
+        let snapTokens = tokens
+        let snapSources = sources
+        let snapGalleries = galleries
+        let snapColNames = collectionNames
+        let snapArtistProfiles = artistProfiles
+        let snapFxhash = fxhashProjects
+        let snapSidebar = selectedSidebarItem
+        let snapSrcScope = sourceScope
 
-    /// Derived list of unique collections/projects with token counts dynamically scoped to the current context
-    private var uniqueCollections: [CollectionContractItem] {
-        var normalCounts: [String: Int] = [:]
-        var fxhashCounts: [String: (count: Int, version: String?)] = [:]
+        derivedStatsTask = Task.detached(priority: .utility) {
+            if Task.isCancelled { return }
+            let sourceAddresses = Set(snapSources.compactMap { $0.walletAddress?.lowercased() })
 
-        let scopedTokens: [UnifiedToken]
-        switch selectedSidebarItem {
-        case .created:
-            scopedTokens = tokens.filter { $0.isCreated || isTokenCreatedByUser($0) }
-        case .owned:
-            scopedTokens = tokens.filter { $0.isOwned }
-        case .customGallery(let gid):
-            if let gallery = galleries.first(where: { $0.id == gid }) {
-                scopedTokens = gallery.matchingTokens(from: tokens, artistDisplayName: { artistDisplayName(for: $0) })
-            } else {
-                scopedTokens = []
+            var owned = 0
+            var created = 0
+            for t in snapTokens {
+                if t.isOwned { owned += 1 }
+                if t.isCreated || Self.staticIsTokenCreatedByUser(t, sourceAddresses: sourceAddresses) { created += 1 }
             }
-        case .objktCuration(let cid):
-            scopedTokens = tokens.filter { $0.rawMetadata?["curationId"] == cid }
-        case .source(let sid):
-            if let src = sources.first(where: { $0.id == sid }), let addr = src.walletAddress?.lowercased() {
-                if sourceScope == .created {
-                    scopedTokens = tokens.filter { t in
-                        t.creators.contains { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == addr }
+
+            // Compute gallery match counts
+            var gCounts: [UUID: Int] = [:]
+            for gallery in snapGalleries {
+                if Task.isCancelled { return }
+                gCounts[gallery.id] = gallery.matchingTokens(from: snapTokens, artistDisplayName: {
+                    Self.staticArtistDisplayName(for: $0, artistProfiles: snapArtistProfiles)
+                }).count
+            }
+
+            // Compute unique collections for current sidebar scope
+            var normalCounts: [String: Int] = [:]
+            var fxhashCounts: [String: (count: Int, version: String?)] = [:]
+
+            let scopedTokens: [UnifiedToken]
+            switch snapSidebar {
+            case .created:
+                scopedTokens = snapTokens.filter { $0.isCreated || Self.staticIsTokenCreatedByUser($0, sourceAddresses: sourceAddresses) }
+            case .owned:
+                scopedTokens = snapTokens.filter { $0.isOwned }
+            case .customGallery(let gid):
+                if let gallery = snapGalleries.first(where: { $0.id == gid }) {
+                    scopedTokens = gallery.matchingTokens(from: snapTokens, artistDisplayName: {
+                        Self.staticArtistDisplayName(for: $0, artistProfiles: snapArtistProfiles)
+                    })
+                } else {
+                    scopedTokens = []
+                }
+            case .objktCuration(let cid):
+                scopedTokens = snapTokens.filter { $0.rawMetadata?["curationId"] == cid }
+            case .source(let sid):
+                if let src = snapSources.first(where: { $0.id == sid }), let addr = src.walletAddress?.lowercased() {
+                    if snapSrcScope == .created {
+                        scopedTokens = snapTokens.filter { t in
+                            t.creators.contains { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == addr }
+                        }
+                    } else {
+                        scopedTokens = snapTokens.filter { t in
+                            t.isOwned && (t.rawMetadata?["sourceWallet"]?.lowercased() == addr || snapSources.count == 1)
+                        }
                     }
                 } else {
-                    scopedTokens = tokens.filter { t in
-                        t.isOwned && (t.rawMetadata?["sourceWallet"]?.lowercased() == addr || sources.count == 1)
-                    }
+                    scopedTokens = []
                 }
-            } else {
-                scopedTokens = []
+            default:
+                scopedTokens = snapTokens
             }
-        default:
-            scopedTokens = tokens
-        }
 
-        for t in scopedTokens {
-            if t.isFxhash {
-                let projName = resolvedProjectName(for: t)
-                let current = fxhashCounts[projName] ?? (0, t.fxhashVersion)
-                fxhashCounts[projName] = (current.count + 1, t.fxhashVersion ?? current.version)
-            } else {
-                normalCounts[t.contract, default: 0] += 1
+            for t in scopedTokens {
+                if t.isFxhash {
+                    let projName = Self.staticResolvedProjectName(for: t, fxhashProjects: snapFxhash)
+                    let current = fxhashCounts[projName] ?? (0, t.fxhashVersion)
+                    fxhashCounts[projName] = (current.count + 1, t.fxhashVersion ?? current.version)
+                } else {
+                    normalCounts[t.contract, default: 0] += 1
+                }
+            }
+
+            var items: [CollectionContractItem] = []
+            items.reserveCapacity(normalCounts.count + fxhashCounts.count)
+            for (contract, count) in normalCounts {
+                items.append(CollectionContractItem(
+                    contract: contract,
+                    displayName: Self.staticResolvedName(for: contract, collectionNames: snapColNames),
+                    count: count
+                ))
+            }
+            for (projName, val) in fxhashCounts {
+                items.append(CollectionContractItem(
+                    contract: "fxhash:\(projName)",
+                    displayName: projName,
+                    count: val.count,
+                    fxhashVersion: val.version
+                ))
+            }
+            let sortedItems = items.sorted { $0.count > $1.count }
+
+            if Task.isCancelled { return }
+            await MainActor.run {
+                self.ownedCount = owned
+                self.createdCount = created
+                self.galleryMatchCounts = gCounts
+                self.cachedUniqueCollections = sortedItems
             }
         }
-
-        var items: [CollectionContractItem] = []
-
-        // 1. FA2 & standard NFT contracts
-        for (contract, count) in normalCounts {
-            items.append(CollectionContractItem(
-                contract: contract,
-                displayName: resolvedName(for: contract),
-                count: count
-            ))
-        }
-
-        // 2. fxhash Generative Projects (differentiated into their true projects!)
-        for (projName, val) in fxhashCounts {
-            items.append(CollectionContractItem(
-                contract: "fxhash:\(projName)",
-                displayName: projName,
-                count: val.count,
-                fxhashVersion: val.version
-            ))
-        }
-
-        return items.sorted { $0.count > $1.count }
     }
 
-    public func resolvedName(for contract: String) -> String {
-        if contract.hasPrefix("fxhash:") {
-            return String(contract.dropFirst(7))
-        }
-        let lower = contract.lowercased()
-        if let name = collectionNames[contract] ?? collectionNames[lower] {
-            return name
-        }
-        return defaultContractAlias(for: contract)
-    }
-
-    private func defaultContractAlias(for contract: String) -> String {
+    private nonisolated static func staticDefaultContractAlias(for contract: String) -> String {
         let lower = contract.lowercased()
         if lower == "kt1kea8z6vwxdjrvqtmraedvzsvxat3khace" { return "fxhash GENTK v1" }
         if lower == "kt1u6ehmng3rqgzgwrjvm31tymgwgymo61gk" || lower == "kt1u6ehmnxjtkvawj4thczg4fsdahc21ssvi" { return "fxhash GENTK v2" }
@@ -506,7 +605,7 @@ public struct LibraryView: View {
                     HStack {
                         Label("Owned", systemImage: "tray.full")
                         Spacer()
-                        Text("\(ownedTokensCount)")
+                        Text("\(ownedCount)")
                             .font(.caption2)
                             .foregroundColor(.secondary)
                     }
@@ -520,7 +619,7 @@ public struct LibraryView: View {
                     HStack {
                         Label("Created", systemImage: "paintpalette")
                         Spacer()
-                        Text("\(createdTokensCount)")
+                        Text("\(createdCount)")
                             .font(.caption2)
                             .foregroundColor(.secondary)
                     }
@@ -534,7 +633,7 @@ public struct LibraryView: View {
                     HStack {
                         Label("Collections", systemImage: "rectangle.stack")
                         Spacer()
-                        Text("\(uniqueCollections.count)")
+                        Text("\(cachedUniqueCollections.count)")
                             .font(.caption2)
                             .foregroundColor(.secondary)
                     }
@@ -548,7 +647,7 @@ public struct LibraryView: View {
                 // Section: desKTop Galleries (Custom Playlists)
                 Section {
                     ForEach(galleries) { gallery in
-                        let matchCount = gallery.matchingTokens(from: tokens, artistDisplayName: { artistDisplayName(for: $0) }).count
+                        let matchCount = galleryMatchCounts[gallery.id] ?? 0
                         HStack(spacing: 6) {
                             Label(gallery.name, systemImage: gallery.isSmart ? "wand.and.stars" : "sparkles.rectangle.stack")
                                 .lineLimit(1)
@@ -797,15 +896,29 @@ public struct LibraryView: View {
         .task {
             await reloadData()
         }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("didReopenLibraryWindow"))) { _ in
+            Task {
+                await reloadData(skipNetworkResolve: true)
+            }
+        }
         .onChange(of: searchText) { _ in updateDisplayedTokens() }
-        .onChange(of: selectedSidebarItem) { _ in updateDisplayedTokens() }
+        .onChange(of: selectedSidebarItem) { _ in
+            updateDisplayedTokens()
+            recomputeDerivedStats()
+        }
         .onChange(of: selectedFormatFilter) { _ in updateDisplayedTokens() }
         .onChange(of: selectedContractFilter) { _ in updateDisplayedTokens() }
         .onChange(of: sortOption) { _ in updateDisplayedTokens() }
         .onChange(of: sortDirection) { _ in updateDisplayedTokens() }
-        .onChange(of: sourceScope) { _ in updateDisplayedTokens() }
+        .onChange(of: sourceScope) { _ in
+            updateDisplayedTokens()
+            recomputeDerivedStats()
+        }
         .onChange(of: collectionScope) { _ in updateDisplayedTokens() }
-        .onChange(of: galleries) { _ in updateDisplayedTokens() }
+        .onChange(of: galleries) { _ in
+            updateDisplayedTokens()
+            recomputeDerivedStats()
+        }
         .sheet(isPresented: $isSourceSheetPresented) {
             SourceManagementSheet(repository: repository) {
                 Task {
@@ -1471,9 +1584,9 @@ public struct LibraryView: View {
 
     private var filteredCollections: [CollectionContractItem] {
         if collectionSearchText.isEmpty {
-            return uniqueCollections
+            return cachedUniqueCollections
         }
-        return uniqueCollections.filter {
+        return cachedUniqueCollections.filter {
             $0.displayName.localizedCaseInsensitiveContains(collectionSearchText) ||
             $0.contract.localizedCaseInsensitiveContains(collectionSearchText)
         }
@@ -1909,7 +2022,7 @@ public struct LibraryView: View {
 
     // MARK: - Data Synchronization
 
-    private func reloadData() async {
+    private func reloadData(skipNetworkResolve: Bool = false) async {
         self.sources = await repository.getSources()
         self.tokens = await repository.getTokens()
         self.galleries = await repository.getGalleries()
@@ -1919,41 +2032,64 @@ public struct LibraryView: View {
         self.isRotationShuffle = await repository.isRotationShuffle()
         let intervalSec = await repository.getRotationInterval()
         self.rotationInterval = RotationInterval(rawValue: intervalSec) ?? .fiveMinutes
-        resolveTopCollections()
-        resolveArtists()
-        resolveFxhashProjects()
+
+        if !hasLoadedDiskCaches {
+            hasLoadedDiskCaches = true
+            let colSnapshot = await CollectionResolver.shared.cachedNamesSnapshot()
+            let (profiles, fxhash) = await Task.detached(priority: .userInitiated) {
+                (ArtistResolver.loadCachedProfiles(), FxhashResolver.loadCachedProjects())
+            }.value
+            self.collectionNames.merge(colSnapshot) { _, new in new }
+            self.artistProfiles.merge(profiles) { _, new in new }
+            self.fxhashProjects.merge(fxhash) { _, new in new }
+        }
+
         updateDisplayedTokens()
-    }
+        recomputeDerivedStats()
 
-    private func resolveTopCollections() {
-        let contracts = Array(Set(tokens.map { $0.contract }))
-        guard !contracts.isEmpty else { return }
-        Task {
-            let names = await CollectionResolver.shared.resolveNames(for: contracts)
-            await MainActor.run {
-                self.collectionNames.merge(names) { _, new in new }
-            }
+        if !skipNetworkResolve {
+            scheduleBackgroundMetadataResolution()
         }
     }
 
-    private func resolveArtists() {
-        let creators = Array(Set(tokens.flatMap(\.creators)))
-        guard !creators.isEmpty else { return }
-        Task {
-            let resolved = await ArtistResolver.shared.resolveArtists(for: creators)
-            await MainActor.run {
-                self.artistProfiles.merge(resolved) { _, new in new }
-            }
-        }
-    }
+    private func scheduleBackgroundMetadataResolution() {
+        backgroundResolveTask?.cancel()
+        let snapTokens = tokens
+        guard !snapTokens.isEmpty else { return }
 
-    private func resolveFxhashProjects() {
-        let fxTokens = tokens.filter { $0.isFxhash }
-        guard !fxTokens.isEmpty else { return }
-        Task {
-            let resolved = await FxhashResolver.shared.resolveProjects(for: fxTokens)
+        backgroundResolveTask = Task.detached(priority: .utility) {
+            // Yield briefly so UI layout and visible disk thumbnails render without contention
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            if Task.isCancelled { return }
+
+            let contracts = Array(Set(snapTokens.map { $0.contract }))
+            let creators = Array(Set(snapTokens.flatMap(\.creators)))
+            let fxTokens = snapTokens.filter { $0.isFxhash }
+
+            async let fetchedCols = CollectionResolver.shared.resolveNames(for: contracts)
+            async let fetchedArtists = ArtistResolver.shared.resolveArtists(for: creators)
+            async let fetchedFx = FxhashResolver.shared.resolveProjects(for: fxTokens)
+
+            let (names, resolvedArtists, resolvedFx) = await (fetchedCols, fetchedArtists, fetchedFx)
+            if Task.isCancelled { return }
+
             await MainActor.run {
-                self.fxhashProjects.merge(resolved) { _, new in new }
+                var needsDerivedRefresh = false
+                if !names.isEmpty {
+                    self.collectionNames.merge(names) { _, new in new }
+                    needsDerivedRefresh = true
+                }
+                if !resolvedArtists.isEmpty {
+                    self.artistProfiles.merge(resolvedArtists) { _, new in new }
+                    needsDerivedRefresh = true
+                }
+                if !resolvedFx.isEmpty {
+                    self.fxhashProjects.merge(resolvedFx) { _, new in new }
+                    needsDerivedRefresh = true
+                }
+                if needsDerivedRefresh {
+                    self.recomputeDerivedStats()
+                }
             }
         }
     }
@@ -1963,6 +2099,7 @@ public struct LibraryView: View {
             if let cached = await repository.getFullCollectionTokens(key: key), !cached.isEmpty {
                 await MainActor.run {
                     self.entireCollectionTokens[key] = cached
+                    self.updateDisplayedTokens()
                 }
                 return
             }
@@ -2618,6 +2755,7 @@ public struct AnimatedGIFView: View {
 
 public struct CachedThumbnailImageView: View {
     let url: URL
+    let fallbackURL: URL?
     let contentMode: ContentMode
     let placeholder: AnyView
 
@@ -2625,10 +2763,14 @@ public struct CachedThumbnailImageView: View {
     @State private var isLoading: Bool = false
     @State private var hasFailed: Bool = false
 
-    public init<P: View>(url: URL, contentMode: ContentMode = .fill, placeholder: P) {
+    public init<P: View>(url: URL, fallbackURL: URL? = nil, contentMode: ContentMode = .fill, placeholder: P) {
         self.url = url
+        self.fallbackURL = fallbackURL
         self.contentMode = contentMode
         self.placeholder = AnyView(placeholder)
+        let preloaded = ImageMemoryCache.shared.object(forKey: url as NSURL)
+            ?? fallbackURL.flatMap { ImageMemoryCache.shared.object(forKey: $0 as NSURL) }
+        self._loadedImage = State(initialValue: preloaded)
     }
 
     public var body: some View {
@@ -2665,8 +2807,12 @@ public struct CachedThumbnailImageView: View {
         isLoading = true
         hasFailed = false
 
-        if let img = await ThumbnailPipeline.shared.loadThumbnail(for: url, maxPixelSize: 400) {
+        if let img = await ThumbnailPipeline.shared.loadThumbnail(for: url, maxPixelSize: 360) {
             self.loadedImage = img
+            self.isLoading = false
+        } else if let fb = fallbackURL,
+                  let fbImg = await ThumbnailPipeline.shared.loadThumbnail(for: fb, maxPixelSize: 360) {
+            self.loadedImage = fbImg
             self.isLoading = false
         } else {
             self.hasFailed = true
@@ -2691,9 +2837,17 @@ public struct ArtworkThumbnailView: View {
     }
 
     private var targetURL: URL? {
-        let uri = token.preferredThumbnailUri
-        guard let uri = uri else { return nil }
+        guard let uri = token.preferredThumbnailUri else { return nil }
         return IPFSGatewayManager.resolvePublicURL(for: uri)
+    }
+
+    private var fallbackURL: URL? {
+        guard let disp = token.displayUri,
+              disp != token.preferredThumbnailUri,
+              UnifiedToken.isVisualUri(disp) else {
+            return nil
+        }
+        return IPFSGatewayManager.resolvePublicURL(for: disp)
     }
 
     public var body: some View {
@@ -2701,7 +2855,7 @@ public struct ArtworkThumbnailView: View {
             AnimatedGIFView(url: url, contentMode: contentMode, animates: true)
                 .clipped()
         } else if let url = targetURL {
-            CachedThumbnailImageView(url: url, contentMode: contentMode, placeholder: placeholderView)
+            CachedThumbnailImageView(url: url, fallbackURL: fallbackURL, contentMode: contentMode, placeholder: placeholderView)
                 .clipped()
         } else {
             placeholderView

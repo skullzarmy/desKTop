@@ -10,6 +10,7 @@ public actor CollectionResolver {
     private let session: URLSession
 
     private var cache: [String: String] = [:]
+    private var attemptedContracts: Set<String> = []
     private var cacheFileURL: URL?
 
     public init(session: URLSession = .shared) {
@@ -66,6 +67,11 @@ public actor CollectionResolver {
         }
     }
 
+    /// Returns already-cached contract names immediately with zero network I/O
+    public func cachedNamesSnapshot() -> [String: String] {
+        return cache
+    }
+
     /// Resolves names for a batch of contract addresses
     public func resolveNames(for contracts: [String]) async -> [String: String] {
         var results: [String: String] = [:]
@@ -75,7 +81,8 @@ public actor CollectionResolver {
             let lower = c.lowercased()
             if let cached = cache[lower] {
                 results[c] = cached
-            } else {
+            } else if lower.hasPrefix("kt1") && !attemptedContracts.contains(lower) {
+                attemptedContracts.insert(lower)
                 toFetch.append(c)
             }
         }

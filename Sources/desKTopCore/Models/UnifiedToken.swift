@@ -181,12 +181,29 @@ public struct UnifiedToken: Identifiable, Hashable, Codable, Sendable {
         self.isCreated = isCreated
     }
 
+    private static let isoFormatterLock = NSLock()
+    nonisolated(unsafe) private static let standardISOFormatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f
+    }()
+    nonisolated(unsafe) private static let fractionalISOFormatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+
     /// Date token was acquired or minted
     public var acquiredDate: Date? {
-        if let raw = rawMetadata?["lastTime"] ?? rawMetadata?["firstTime"] ?? rawMetadata?["timestamp"] {
-            return ISO8601DateFormatter().date(from: raw)
+        guard let raw = rawMetadata?["lastTime"] ?? rawMetadata?["firstTime"] ?? rawMetadata?["timestamp"] else {
+            return nil
         }
-        return nil
+        Self.isoFormatterLock.lock()
+        defer { Self.isoFormatterLock.unlock() }
+        if let d = Self.standardISOFormatter.date(from: raw) {
+            return d
+        }
+        return Self.fractionalISOFormatter.date(from: raw)
     }
 
     /// Tests whether a URI string points to visual/displayable media rather than raw metadata text or JSON
@@ -199,36 +216,28 @@ public struct UnifiedToken: Identifiable, Hashable, Codable, Sendable {
         return true
     }
 
-    /// Best visual thumbnail URI (filters out generic HEN placeholder icons and non-visual metadata)
+    /// Best visual thumbnail URI (filters out generic HEN placeholder icons, non-visual metadata, and non-image artifacts like video/HTML)
     public var preferredThumbnailUri: String? {
         let henPlaceholder = "QmNrhZHUaEqxhyLfqoq1mtHSipkWHeT31LNHb1QEbDHgnc"
+        let category = mediaCategory
 
-        // For audio/3D, prefer displayUri cover
-        if mediaCategory == .audio3d {
-            if let disp = displayUri, Self.isVisualUri(disp), !disp.contains(henPlaceholder) { return disp }
-            if let thumb = thumbnailUri, Self.isVisualUri(thumb), !thumb.contains(henPlaceholder) { return thumb }
-        }
+        let nonImageArtifactCategories: Set<MediaCategory> = [
+            .video, .audio3d, .interactiveHtml, .fxhash, .editArt, .aleatory, .bootloader
+        ]
 
-        // For GIFs / animated, if thumbnailUri or displayUri is lightweight, prefer it for fast grid rendering
-        if mediaCategory == .animatedImage {
-            if let thumb = thumbnailUri, Self.isVisualUri(thumb), !thumb.contains(henPlaceholder) { return thumb }
-            if let disp = displayUri, Self.isVisualUri(disp), !disp.contains(henPlaceholder) { return disp }
-            if let art = artifactUri, Self.isVisualUri(art) { return art }
-        }
-
-        // Standard hierarchy
         if let thumb = thumbnailUri, Self.isVisualUri(thumb), !thumb.contains(henPlaceholder) {
             return thumb
         }
         if let disp = displayUri, Self.isVisualUri(disp), !disp.contains(henPlaceholder) {
             return disp
         }
-        if let art = artifactUri, Self.isVisualUri(art) {
+        if !nonImageArtifactCategories.contains(category),
+           let art = artifactUri, Self.isVisualUri(art) {
             return art
         }
         if let thumb = thumbnailUri, Self.isVisualUri(thumb) { return thumb }
         if let disp = displayUri, Self.isVisualUri(disp) { return disp }
-        return thumbnailUri ?? displayUri ?? artifactUri
+        return nonImageArtifactCategories.contains(category) ? nil : artifactUri
     }
 
     /// Primary URI to render as wallpaper (displayUri preferred for audio/3D, artifactUri preferred for visuals; rejects raw JSON/text)

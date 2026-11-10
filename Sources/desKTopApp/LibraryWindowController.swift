@@ -36,8 +36,12 @@ public final class LibraryWindowController: NSWindowController, NSWindowDelegate
             NSApp.applicationIconImage = iconImage
         }
 
-        let hosting = NSHostingView(rootView: LibraryView(repository: repository, onSetWallpaper: onSetWallpaper))
-        window.contentView = hosting
+        if window.contentView is NSHostingView<LibraryView> {
+            NotificationCenter.default.post(name: Notification.Name("didReopenLibraryWindow"), object: nil)
+        } else {
+            let hosting = NSHostingView(rootView: LibraryView(repository: repository, onSetWallpaper: onSetWallpaper))
+            window.contentView = hosting
+        }
 
         // Switch to .regular activation policy so the Dock icon appears while the window is open
         NSApp.setActivationPolicy(.regular)
