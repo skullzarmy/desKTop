@@ -74,9 +74,11 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ inputs.tag || github.ref_name }}
-          name: "desKTop"
+          name: "desKTop ${{ inputs.tag || github.ref_name }}"
           draft: false
           prerelease: ${{ inputs.prerelease || false }}
           generate_release_notes: true
           files: |
-            release-assets/*
+            release-assets/build/desKTop.dmg
+            release-assets/build/desKTop.zip
+            release-assets/checksums.txt
