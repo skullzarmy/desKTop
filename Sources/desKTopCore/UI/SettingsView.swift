@@ -30,6 +30,7 @@ public struct SettingsView: View {
 
     @State private var selectedTab: SettingsTab
     @State private var launchAtLogin: Bool = false
+    @ObservedObject private var powerGuardian = PowerGuardian.shared
 
     // Update checker state
     @State private var isCheckingForUpdates: Bool = false
@@ -162,13 +163,13 @@ public struct SettingsView: View {
                 HStack(spacing: 24) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Power Source").font(.caption).foregroundColor(.secondary)
-                        Text(PowerGuardian.shared.isOnBattery ? "Battery Power" : "AC Power Connected")
+                        Text(powerGuardian.isOnBattery ? "Battery Power" : "AC Power Connected")
                             .font(.callout).fontWeight(.medium)
                     }
 
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Low Power Mode").font(.caption).foregroundColor(.secondary)
-                        Text(PowerGuardian.shared.isLowPowerModeEnabled ? "Active (Throttled)" : "Off")
+                        Text(powerGuardian.isLowPowerModeEnabled ? "Active (Throttled)" : "Off")
                             .font(.callout).fontWeight(.medium)
                     }
 
@@ -388,8 +389,8 @@ public struct SettingsView: View {
 
     private var effectiveCanvasMode: String {
         if disableAnimations { return "Static (Frozen)" }
-        if pauseOnBattery && PowerGuardian.shared.isOnBattery { return "Static (Battery Saver)" }
-        if PowerGuardian.shared.isLowPowerModeEnabled { return "Static (Low Power Mode)" }
+        if pauseOnBattery && powerGuardian.isOnBattery { return "Static (Battery Saver)" }
+        if powerGuardian.isLowPowerModeEnabled { return "Static (Low Power Mode)" }
         return "Dynamic"
     }
 

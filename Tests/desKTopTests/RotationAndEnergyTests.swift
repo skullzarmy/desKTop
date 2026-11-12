@@ -9,6 +9,13 @@ public struct RotationAndEnergyTests {
         _ = guardian.isLowPowerModeEnabled
         _ = guardian.isThermalThrottling
         _ = guardian.shouldSuspendLiveCanvas
+        guardian.refreshPowerState()
+
+        try assertFalse(PowerGuardian.evaluateShouldFreeze(disableAnimations: false, pauseOnBattery: false, isOnBattery: true, isLowPowerModeEnabled: false))
+        try assertTrue(PowerGuardian.evaluateShouldFreeze(disableAnimations: false, pauseOnBattery: true, isOnBattery: true, isLowPowerModeEnabled: false))
+        try assertFalse(PowerGuardian.evaluateShouldFreeze(disableAnimations: false, pauseOnBattery: true, isOnBattery: false, isLowPowerModeEnabled: false))
+        try assertTrue(PowerGuardian.evaluateShouldFreeze(disableAnimations: false, pauseOnBattery: false, isOnBattery: false, isLowPowerModeEnabled: true))
+        try assertTrue(PowerGuardian.evaluateShouldFreeze(disableAnimations: true, pauseOnBattery: false, isOnBattery: false, isLowPowerModeEnabled: false))
 
         // 2. Rotation intervals
         try assertEqual(RotationInterval.fiveMinutes.rawValue, 300)

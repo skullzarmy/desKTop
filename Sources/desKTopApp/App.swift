@@ -57,6 +57,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var pendingRotationChangeTask: Task<Void, Never>?
     private var applyWallpaperTask: Task<Void, Never>?
     private var wallpaperRequestSeq: UInt64 = 0
+    private var lastEvaluatedFreezeState: Bool?
     private var cancellables = Set<AnyCancellable>()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -160,6 +161,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             Task { @MainActor [weak self] in
                 guard let self = self, let current = self.viewModel.currentToken else { return }
                 await self.setTokenAsWallpaper(current)
+            }
+        }
+
+        // React when system power source or Low Power Mode changes (AC <-> Battery)
+        _ = PowerGuardian.shared
+        NotificationCenter.default.addObserver(
+            forName: PowerGuardian.powerStateDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self = self, let current = self.viewModel.currentToken else { return }
+                let disableAnimations = UserDefaults.standard.bool(forKey: "disableAnimations")
+                let pauseOnBattery = UserDefaults.standard.bool(forKey: "pauseOnBattery")
+                let shouldFreeze = PowerGuardian.evaluateShouldFreeze(
+                    disableAnimations: disableAnimations,
+                    pauseOnBattery: pauseOnBattery,
+                    isOnBattery: PowerGuardian.shared.isOnBattery,
+                    isLowPowerModeEnabled: PowerGuardian.shared.isLowPowerModeEnabled
+                )
+                guard shouldFreeze != self.lastEvaluatedFreezeState else { return }
+                if current.mediaCategory != .staticImage && current.mediaCategory != .vectorImage {
+                    await self.setTokenAsWallpaper(current)
+                } else {
+                    self.lastEvaluatedFreezeState = shouldFreeze
+                }
             }
         }
 
@@ -452,7 +479,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     @objc private func showAboutDialog() {
         let alert = NSAlert()
         alert.messageText = "desKTop"
-        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.1"
         alert.informativeText = "Version \(version)\n\nTurn your Mac desktop into a living Tezos art gallery.\n\na FAFOlab joint\nhttps://fafolab.xyz\n\nOpen source under The Unlicense."
         alert.alertStyle = .informational
         if let icon = NSApp.applicationIconImage {
@@ -578,7 +605,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             // Energy & Motion tuning check
             let disableAnimations = UserDefaults.standard.bool(forKey: "disableAnimations")
             let pauseOnBattery = UserDefaults.standard.bool(forKey: "pauseOnBattery")
-            let shouldFreeze = disableAnimations || (pauseOnBattery && PowerGuardian.shared.isOnBattery) || PowerGuardian.shared.isLowPowerModeEnabled
+            let shouldFreeze = PowerGuardian.evaluateShouldFreeze(
+                disableAnimations: disableAnimations,
+                pauseOnBattery: pauseOnBattery,
+                isOnBattery: PowerGuardian.shared.isOnBattery,
+                isLowPowerModeEnabled: PowerGuardian.shared.isLowPowerModeEnabled
+            )
+            self.lastEvaluatedFreezeState = shouldFreeze
 
             let matteModeRaw = UserDefaults.standard.string(forKey: "wallpaperMatteMode") ?? WallpaperMatteMode.dynamicArtwork.rawValue
             let matteMode = WallpaperMatteMode(rawValue: matteModeRaw) ?? .dynamicArtwork
