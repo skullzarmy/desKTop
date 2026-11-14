@@ -55,9 +55,9 @@ cat << 'EOF' > "$CONTENTS_DIR/Info.plist"
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0.1</string>
+    <string>1.0.2</string>
     <key>CFBundleVersion</key>
-    <string>2</string>
+    <string>3</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>LSUIElement</key>
@@ -71,6 +71,71 @@ cat << 'EOF' > "$CONTENTS_DIR/Info.plist"
 EOF
 
 # Ad-hoc codesign bundle
+codesign --force --deep --sign - "$APP_DIR"
+
+# Build & embed native macOS Screen Saver plugin (.saver)
+SAVER_DIR="$CONTENTS_DIR/Library/ScreenSavers/desKTop.saver"
+SAVER_CONTENTS="$SAVER_DIR/Contents"
+SAVER_MACOS="$SAVER_CONTENTS/MacOS"
+SAVER_RESOURCES="$SAVER_CONTENTS/Resources"
+mkdir -p "$SAVER_MACOS" "$SAVER_RESOURCES"
+
+if [ -f "$DIR/Resources/AppIcon.icns" ]; then
+    sips -s format png -z 100 160 "$DIR/Resources/AppIcon.icns" --out "$SAVER_RESOURCES/thumbnail.png" >/dev/null 2>&1 || true
+    sips -s format png -z 200 320 "$DIR/Resources/AppIcon.icns" --out "$SAVER_RESOURCES/thumbnail@2x.png" >/dev/null 2>&1 || true
+fi
+
+ARCH="$(uname -m)"
+SWIFT_OPT="-Onone"
+if [ "$BUILD_CONFIG" = "release" ]; then
+    SWIFT_OPT="-O"
+fi
+
+echo "Building native macOS Screen Saver bundle (desKTop.saver)..."
+swiftc \
+    -parse-as-library \
+    -emit-library \
+    -Xlinker -bundle \
+    "$SWIFT_OPT" \
+    -target "${ARCH}-apple-macosx14.0" \
+    "$DIR/Sources/desKTopScreenSaver/desKTopScreenSaverView.swift" \
+    -o "$SAVER_MACOS/desKTopScreenSaver" \
+    -framework AppKit \
+    -framework AVFoundation \
+    -framework ScreenSaver
+
+cat << 'EOF' > "$SAVER_CONTENTS/Info.plist"
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleExecutable</key>
+    <string>desKTopScreenSaver</string>
+    <key>CFBundleIdentifier</key>
+    <string>xyz.fafolab.desktop.saver</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>desKTop</string>
+    <key>CFBundlePackageType</key>
+    <string>BNDL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0.2</string>
+    <key>CFBundleVersion</key>
+    <string>3</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSPrincipalClass</key>
+    <string>desKTopScreenSaverView</string>
+</dict>
+</plist>
+EOF
+
+codesign --force --deep --sign - "$SAVER_DIR"
 codesign --force --deep --sign - "$APP_DIR"
 
 if [[ "$*" == *"--zip"* ]] || [ "$BUILD_CONFIG" = "release" ]; then

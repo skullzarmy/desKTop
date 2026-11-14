@@ -111,5 +111,93 @@ public struct UnifiedTokenTests {
         )
         try assertEqual(textArticleToken.primaryWallpaperUri, "ipfs://QmCoverArt.jpg")
         try assertEqual(textArticleToken.preferredThumbnailUri, "ipfs://QmThumb.jpg")
+
+        // Marketplace detection: Teia (hic et nunc contract)
+        let teiaToken = UnifiedToken(
+            contract: "KT1RJ6PbjHpwc3M5rw5s2Nbmefwbuwbdxton",
+            tokenId: "168685",
+            name: "Teia Piece"
+        )
+        try assertEqual(teiaToken.marketplace, .teia)
+        try assertEqual(teiaToken.marketplaceTokenURL?.absoluteString, "https://teia.art/objkt/168685")
+
+        // Marketplace detection: Aleatory
+        let aleatoryToken = UnifiedToken(
+            contract: "KT1AleatoryContract",
+            tokenId: "42",
+            name: "Aleatory Piece",
+            aleatory: AleatoryMetadata(code: "function draw(){}", seed: "oo123", params: nil, provider: nil, encoding: "raw", version: 1)
+        )
+        try assertEqual(aleatoryToken.marketplace, .aleatory)
+        try assertEqual(aleatoryToken.marketplaceTokenURL?.absoluteString, "https://aleatory.art")
+
+        // Marketplace detection: fxhash
+        let fxhashToken = UnifiedToken(
+            contract: "KT1KEa8z6vWXDJrVqtMrAeDVzsvxat3kHaCE",
+            tokenId: "1001",
+            name: "fxhash Gentk"
+        )
+        try assertEqual(fxhashToken.marketplace, .fxhash)
+        try assertEqual(fxhashToken.marketplaceTokenURL?.absoluteString, "https://www.fxhash.xyz/gentk/1001")
+
+        // Marketplace detection: objkt.com fallback
+        let objktToken = UnifiedToken(
+            contract: "KT1CustomObjktContract",
+            tokenId: "7",
+            name: "Objkt Piece"
+        )
+        try assertEqual(objktToken.marketplace, .objkt)
+        try assertEqual(objktToken.marketplaceTokenURL?.absoluteString, "https://objkt.com/tokens/KT1CustomObjktContract/7")
+
+        // Objkt safety flags (accessibility.hazards + __hazards_, content_rating + __nsfw_, flag)
+        let flashingToken = UnifiedToken(
+            contract: "KT1Flash",
+            tokenId: "1",
+            name: "Strobe",
+            accessibilityHazards: ["flashing"]
+        )
+        try assertTrue(flashingToken.hasFlashingHazard)
+        try assertTrue(flashingToken.isHiddenByContentFilters(hideFlashing: true, hideAdult: false, hideFlagged: false))
+        try assertFalse(flashingToken.isHiddenByContentFilters(hideFlashing: false, hideAdult: true, hideFlagged: true))
+
+        let legacyHazardAttrToken = UnifiedToken(
+            contract: "KT1FlashLegacy",
+            tokenId: "2",
+            name: "Legacy Strobe",
+            attributes: [TokenAttribute(name: "__hazards_", value: "flashing")]
+        )
+        try assertTrue(legacyHazardAttrToken.hasFlashingHazard)
+
+        let matureToken = UnifiedToken(
+            contract: "KT1Adult",
+            tokenId: "3",
+            name: "Mature",
+            contentRating: "mature"
+        )
+        try assertTrue(matureToken.isAdultContent)
+        try assertTrue(matureToken.isHiddenByContentFilters(hideFlashing: false, hideAdult: true, hideFlagged: false))
+
+        let legacyNsfwAttrToken = UnifiedToken(
+            contract: "KT1AdultLegacy",
+            tokenId: "4",
+            name: "Legacy NSFW",
+            attributes: [TokenAttribute(name: "__nsfw_", value: "true")]
+        )
+        try assertTrue(legacyNsfwAttrToken.isAdultContent)
+
+        let flaggedToken = UnifiedToken(
+            contract: "KT1Flagged",
+            tokenId: "5",
+            name: "Flagged",
+            moderationFlag: "flagged"
+        )
+        try assertTrue(flaggedToken.isModerationFlagged)
+        try assertTrue(flaggedToken.isHiddenByContentFilters(hideFlashing: false, hideAdult: false, hideFlagged: true))
+
+        // Filter-level Smart Gallery exclusion
+        let safeCriteria = GalleryFilterCriteria(excludeFlashingHazards: true, excludeAdultContent: true)
+        try assertFalse(safeCriteria.matches(token: flashingToken))
+        try assertFalse(safeCriteria.matches(token: legacyNsfwAttrToken))
+        try assertTrue(safeCriteria.matches(token: objktToken))
     }
 }

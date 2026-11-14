@@ -45,6 +45,12 @@ public final class VideoWallpaperView: NSView {
         queuePlayer?.play()
     }
 
+    public func restart() {
+        queuePlayer?.seek(to: .zero) { [weak queuePlayer] _ in
+            queuePlayer?.play()
+        }
+    }
+
     public override func layout() {
         super.layout()
         playerLayer?.frame = bounds

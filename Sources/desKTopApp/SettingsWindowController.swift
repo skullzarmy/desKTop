@@ -29,7 +29,7 @@ public final class SettingsWindowController: NSWindowController, NSWindowDelegat
         fatalError("init(coder:) has not been implemented")
     }
 
-    public func show(repository: WalletRepository, initialTab: SettingsTab = .energy) {
+    public func show(repository: WalletRepository, initialTab: SettingsTab = .general) {
         guard let window = self.window else { return }
 
         self.currentRepository = repository

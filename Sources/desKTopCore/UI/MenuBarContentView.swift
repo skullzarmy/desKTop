@@ -6,9 +6,21 @@ public struct MenuBarContentView: View {
     @Binding public var isPaused: Bool
     @Binding public var scaling: WallpaperScaling
     public let statusMessage: String
+    public let isFavorite: Bool
+    public let isInteractive: Bool
+    public let isDesktopIconsHidden: Bool
+    public let lastHiddenTokenName: String?
     public let onNext: () -> Void
     public let onPrevious: () -> Void
     public let onRestartAnimation: () -> Void
+    public let onToggleFavorite: () -> Void
+    public let onHideToken: () -> Void
+    public let onUndoLastHide: () -> Void
+    public let onToggleInteractive: () -> Void
+    public let onToggleDesktopIcons: () -> Void
+    public let onEnterGalleryMode: () -> Void
+    public let onSaveToDownloads: () -> Void
+    public let onCopyObjktLink: () -> Void
     public let onOpenLibrary: () -> Void
     public let onOpenSettings: () -> Void
 
@@ -17,9 +29,21 @@ public struct MenuBarContentView: View {
         isPaused: Binding<Bool>,
         scaling: Binding<WallpaperScaling>,
         statusMessage: String = "Active",
+        isFavorite: Bool = false,
+        isInteractive: Bool = false,
+        isDesktopIconsHidden: Bool = false,
+        lastHiddenTokenName: String? = nil,
         onNext: @escaping () -> Void,
         onPrevious: @escaping () -> Void,
         onRestartAnimation: @escaping () -> Void,
+        onToggleFavorite: @escaping () -> Void = {},
+        onHideToken: @escaping () -> Void = {},
+        onUndoLastHide: @escaping () -> Void = {},
+        onToggleInteractive: @escaping () -> Void = {},
+        onToggleDesktopIcons: @escaping () -> Void = {},
+        onEnterGalleryMode: @escaping () -> Void = {},
+        onSaveToDownloads: @escaping () -> Void = {},
+        onCopyObjktLink: @escaping () -> Void = {},
         onOpenLibrary: @escaping () -> Void,
         onOpenSettings: @escaping () -> Void = {}
     ) {
@@ -27,11 +51,28 @@ public struct MenuBarContentView: View {
         self._isPaused = isPaused
         self._scaling = scaling
         self.statusMessage = statusMessage
+        self.isFavorite = isFavorite
+        self.isInteractive = isInteractive
+        self.isDesktopIconsHidden = isDesktopIconsHidden
+        self.lastHiddenTokenName = lastHiddenTokenName
         self.onNext = onNext
         self.onPrevious = onPrevious
         self.onRestartAnimation = onRestartAnimation
+        self.onToggleFavorite = onToggleFavorite
+        self.onHideToken = onHideToken
+        self.onUndoLastHide = onUndoLastHide
+        self.onToggleInteractive = onToggleInteractive
+        self.onToggleDesktopIcons = onToggleDesktopIcons
+        self.onEnterGalleryMode = onEnterGalleryMode
+        self.onSaveToDownloads = onSaveToDownloads
+        self.onCopyObjktLink = onCopyObjktLink
         self.onOpenLibrary = onOpenLibrary
         self.onOpenSettings = onOpenSettings
+    }
+
+    private var canInteract: Bool {
+        guard let cat = currentToken?.mediaCategory else { return false }
+        return cat == .fxhash || cat == .aleatory || cat == .bootloader || cat == .editArt || cat == .interactiveHtml
     }
 
     public var body: some View {
@@ -39,9 +80,27 @@ public struct MenuBarContentView: View {
             // Header / Current artwork info
             if let token = currentToken {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(token.name)
-                        .font(.headline)
-                        .lineLimit(1)
+                    HStack(alignment: .top, spacing: 6) {
+                        Text(token.name)
+                            .font(.headline)
+                            .lineLimit(1)
+
+                        Spacer()
+
+                        Button(action: onToggleFavorite) {
+                            Image(systemName: isFavorite ? "star.fill" : "star")
+                                .foregroundColor(isFavorite ? .yellow : .secondary)
+                        }
+                        .buttonStyle(.borderless)
+                        .help(isFavorite ? "Remove from Favorites" : "Add to Favorites")
+
+                        Button(action: onHideToken) {
+                            Image(systemName: "eye.slash")
+                                .foregroundColor(.secondary)
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Hide this piece from rotation")
+                    }
 
                     if !token.creators.isEmpty {
                         Text("by \(token.creators.joined(separator: ", "))")
@@ -62,8 +121,26 @@ public struct MenuBarContentView: View {
                         Text(statusMessage)
                             .font(.caption2)
                             .foregroundColor(.secondary)
+                            .lineLimit(1)
                     }
                     .padding(.top, 2)
+
+                    if let hiddenName = lastHiddenTokenName {
+                        HStack(spacing: 6) {
+                            Text("Hid “\(hiddenName)”")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                                .lineLimit(1)
+                            Spacer()
+                            Button("Unhide") {
+                                onUndoLastHide()
+                            }
+                            .buttonStyle(.borderless)
+                            .font(.caption2)
+                            .foregroundColor(.blue)
+                        }
+                        .padding(.top, 4)
+                    }
                 }
                 .padding(.bottom, 4)
 
@@ -103,26 +180,74 @@ public struct MenuBarContentView: View {
             }
             .pickerStyle(.menu)
 
-            Divider()
-
-            // Navigation links
-            if let token = currentToken {
-                Button(action: {
-                    if let url = URL(string: "https://objkt.com/tokens/\(token.contract)/\(token.tokenId)") {
-                        NSWorkspace.shared.open(url)
+            // Digital Frame quick toggles
+            VStack(alignment: .leading, spacing: 6) {
+                if canInteract {
+                    Button(action: onToggleInteractive) {
+                        Label(
+                            isInteractive ? "Exit Interactive Canvas (Esc)" : "Interact with Canvas",
+                            systemImage: isInteractive ? "hand.tap.fill" : "hand.tap"
+                        )
                     }
-                }) {
-                    Label("View on objkt.com", systemImage: "arrow.up.right.square")
+                    .foregroundColor(isInteractive ? .blue : .primary)
+                }
+
+                Button(action: onToggleDesktopIcons) {
+                    Label(
+                        isDesktopIconsHidden ? "Show Desktop Icons" : "Hide Desktop Icons (Clean Frame)",
+                        systemImage: isDesktopIconsHidden ? "eye" : "rectangle.dashed"
+                    )
+                }
+
+                Button(action: onEnterGalleryMode) {
+                    Label("Enter Gallery Mode", systemImage: "photo.artframe")
                 }
             }
+            .buttonStyle(.borderless)
 
-            Button(action: onOpenLibrary) {
-                Label("Open Desktop Library...", systemImage: "photo.stack")
+            Divider()
+
+            // Navigation & collector links
+            if let token = currentToken {
+                VStack(alignment: .leading, spacing: 6) {
+                    Button(action: {
+                        if let url = token.marketplaceTokenURL {
+                            NSWorkspace.shared.open(url)
+                        }
+                    }) {
+                        Label("View on \(token.marketplace.displayName)", systemImage: "arrow.up.right.square")
+                    }
+
+                    HStack(spacing: 14) {
+                        Button(action: onCopyObjktLink) {
+                            Label("Copy Link", systemImage: "link")
+                        }
+
+                        Button(action: onSaveToDownloads) {
+                            Label("Save Artwork", systemImage: "square.and.arrow.down")
+                        }
+                    }
+                }
+                .buttonStyle(.borderless)
+
+                Divider()
             }
 
-            Button(action: onOpenSettings) {
-                Label("Settings...", systemImage: "gearshape")
+            VStack(alignment: .leading, spacing: 6) {
+                Button(action: onOpenLibrary) {
+                    Label("Open Desktop Library...", systemImage: "photo.stack")
+                }
+
+                Button(action: onOpenSettings) {
+                    Label("Settings...", systemImage: "gearshape")
+                }
+
+                Button(action: { NSApp.terminate(nil) }) {
+                    Label("Quit desKTop", systemImage: "power")
+                }
+                .keyboardShortcut("q", modifiers: .command)
             }
+            .buttonStyle(.borderless)
 
             Divider()
 
@@ -157,6 +282,6 @@ public struct MenuBarContentView: View {
             .padding(.top, 2)
         }
         .padding(12)
-        .frame(minWidth: 260)
+        .frame(minWidth: 280)
     }
 }

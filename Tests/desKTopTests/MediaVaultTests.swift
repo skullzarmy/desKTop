@@ -39,5 +39,25 @@ public struct MediaVaultTests {
         try await vault.clearCache()
         let clearedSize = await vault.totalCacheSize()
         try assertEqual(clearedSize, 0)
+
+        // 6. LRU cache allotment enforcement
+        let oldFile = tempDir.appendingPathComponent("old.bin")
+        let newFile = tempDir.appendingPathComponent("new.bin")
+        let chunk = Data(repeating: 0xAB, count: 1024)
+        try chunk.write(to: oldFile)
+        try chunk.write(to: newFile)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(-3600)],
+            ofItemAtPath: oldFile.path
+        )
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date()],
+            ofItemAtPath: newFile.path
+        )
+
+        let evictedCount = await vault.enforceCacheLimit(maxBytes: 1200)
+        try assertEqual(evictedCount, 1)
+        try assertTrue(!FileManager.default.fileExists(atPath: oldFile.path), "Oldest file should be evicted by LRU")
+        try assertTrue(FileManager.default.fileExists(atPath: newFile.path), "Newest file should remain")
     }
 }

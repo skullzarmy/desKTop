@@ -16,6 +16,7 @@ public enum ActiveRotationTarget: Hashable, Sendable {
     case allArt
     case owned
     case created
+    case favorites
     case collection(contract: String, displayName: String, scope: CollectionRotationScope = .inLibrary)
     case customGallery(id: UUID, name: String)
     case objktCuration(id: String, name: String)
@@ -25,6 +26,7 @@ public enum ActiveRotationTarget: Hashable, Sendable {
         case .allArt: return "All Art"
         case .owned: return "Owned Art"
         case .created: return "Created Art"
+        case .favorites: return "Favorites"
         case .collection(_, let name, let scope):
             return scope == .entireCollection ? "Entire \(name)" : "My \(name)"
         case .customGallery(_, let name): return name
@@ -52,7 +54,7 @@ private struct EmptyCodable: Codable {}
 
 extension ActiveRotationTarget: Codable {
     enum CodingKeys: String, CodingKey {
-        case allArt, owned, created, collection, customGallery, objktCuration
+        case allArt, owned, created, favorites, collection, customGallery, objktCuration
     }
 
     enum CollectionKeys: String, CodingKey {
@@ -75,6 +77,8 @@ extension ActiveRotationTarget: Codable {
             self = .owned
         } else if container.contains(.created) {
             self = .created
+        } else if container.contains(.favorites) {
+            self = .favorites
         } else if container.contains(.collection) {
             let colContainer = try container.nestedContainer(keyedBy: CollectionKeys.self, forKey: .collection)
             let contract = try colContainer.decode(String.self, forKey: .contract)
@@ -105,6 +109,8 @@ extension ActiveRotationTarget: Codable {
             try container.encode(EmptyCodable(), forKey: .owned)
         case .created:
             try container.encode(EmptyCodable(), forKey: .created)
+        case .favorites:
+            try container.encode(EmptyCodable(), forKey: .favorites)
         case .collection(let contract, let displayName, let scope):
             var colContainer = container.nestedContainer(keyedBy: CollectionKeys.self, forKey: .collection)
             try colContainer.encode(contract, forKey: .contract)
@@ -287,6 +293,34 @@ public actor WalletRepository {
         state.blacklistedIds.insert(id)
         state.whitelistedIds.remove(id)
         try persist()
+    }
+
+    public func unblacklistToken(id: String) async throws {
+        state.blacklistedIds.remove(id)
+        try persist()
+    }
+
+    public func clearBlacklist() async throws {
+        state.blacklistedIds.removeAll()
+        try persist()
+    }
+
+    public func toggleFavoriteToken(id: String) async throws -> Bool {
+        let isFav: Bool
+        if state.whitelistedIds.contains(id) {
+            state.whitelistedIds.remove(id)
+            isFav = false
+        } else {
+            state.whitelistedIds.insert(id)
+            state.blacklistedIds.remove(id)
+            isFav = true
+        }
+        try persist()
+        return isFav
+    }
+
+    public func isTokenFavorite(id: String) -> Bool {
+        return state.whitelistedIds.contains(id)
     }
 
     // MARK: - Token Index Cache
@@ -561,20 +595,25 @@ public actor WalletRepository {
         }
     }
 
-    /// Tokens to use for wallpaper rotation according to the active rotation target
+    /// Tokens to use for wallpaper rotation according to the active rotation target, excluding blacklisted items
     public func getActiveRotationTokens() -> [UnifiedToken] {
         let target = state.activeRotationTarget ?? .allArt
+        let baseTokens: [UnifiedToken]
         switch target {
         case .allArt:
-            return state.tokens
+            baseTokens = state.tokens
         case .owned:
-            return state.tokens.filter { !$0.isCreated }
+            baseTokens = state.tokens.filter { !$0.isCreated }
         case .created:
-            return state.tokens.filter { $0.isCreated }
+            baseTokens = state.tokens.filter { $0.isCreated }
+        case .favorites:
+            let favs = state.tokens.filter { state.whitelistedIds.contains($0.id) }
+            baseTokens = favs.isEmpty ? state.tokens : favs
         case .collection(let contract, _, let scope):
             if scope == .entireCollection {
                 if let full = fullCollectionCache[contract] ?? fullCollectionCache[contract.lowercased()], !full.isEmpty {
-                    return full
+                    baseTokens = full
+                    break
                 }
             }
             let matching: [UnifiedToken]
@@ -584,16 +623,51 @@ public actor WalletRepository {
             } else {
                 matching = state.tokens.filter { $0.contract.caseInsensitiveCompare(contract) == .orderedSame }
             }
-            return matching.isEmpty ? state.tokens : matching
+            baseTokens = matching.isEmpty ? state.tokens : matching
         case .customGallery(let gid, _):
             guard let g = state.galleries.first(where: { $0.id == gid }) else {
-                return state.tokens
+                baseTokens = state.tokens
+                break
             }
             let matched = g.matchingTokens(from: state.tokens)
-            return matched.isEmpty ? state.tokens : matched
+            baseTokens = matched.isEmpty ? state.tokens : matched
         case .objktCuration(let cid, _):
             let matched = state.tokens.filter { $0.rawMetadata?["curationId"] == cid }
-            return matched.isEmpty ? state.tokens : matched
+            baseTokens = matched.isEmpty ? state.tokens : matched
+        }
+
+        let hideFlashing = UserDefaults.standard.bool(forKey: "hideFlashingHazards")
+        let hideAdult = UserDefaults.standard.bool(forKey: "hideAdultContent")
+        let hideFlagged = UserDefaults.standard.bool(forKey: "hideFlaggedTokens")
+
+        let safeTokens = baseTokens.filter {
+            !$0.isHiddenByContentFilters(hideFlashing: hideFlashing, hideAdult: hideAdult, hideFlagged: hideFlagged)
+        }
+        let visible = safeTokens.filter { !state.blacklistedIds.contains($0.id) }
+        return visible.isEmpty ? safeTokens : visible
+    }
+
+    /// Enriches tokens that don't yet have Objkt safety/accessibility metadata.
+    public func enrichSafetyMetadata(using client: ObjktClient = ObjktClient()) async {
+        let targets = state.tokens.filter { $0.moderationFlag == nil && $0.contentRating == nil && $0.accessibilityHazards.isEmpty }
+        guard !targets.isEmpty else { return }
+
+        let pairs = targets.map { ($0.contract, $0.tokenId) }
+        let fetched = await client.fetchSafetyMetadata(for: pairs)
+        guard !fetched.isEmpty else { return }
+
+        var changed = false
+        for i in state.tokens.indices {
+            let key = "\(state.tokens[i].contract):\(state.tokens[i].tokenId)"
+            if let meta = fetched[key] {
+                state.tokens[i].accessibilityHazards = meta.hazards
+                state.tokens[i].contentRating = meta.contentRating
+                state.tokens[i].moderationFlag = meta.flag ?? "none"
+                changed = true
+            }
+        }
+        if changed {
+            try? persist()
         }
     }
 

@@ -6,6 +6,8 @@ public enum LibrarySidebarItem: Hashable, Sendable {
     case allArt
     case owned
     case created
+    case favorites
+    case hidden
     case collections
     case collection(String)    // contract address
     case customGallery(UUID)
@@ -104,6 +106,8 @@ public struct LibraryView: View {
     // Cached off-main-thread derived sidebar & filter state
     @State private var ownedCount: Int = 0
     @State private var createdCount: Int = 0
+    @State private var favoriteIds: Set<String> = []
+    @State private var blacklistedIds: Set<String> = []
     @State private var cachedUniqueCollections: [CollectionContractItem] = []
     @State private var galleryMatchCounts: [UUID: Int] = [:]
     @State private var hasLoadedDiskCaches: Bool = false
@@ -127,6 +131,16 @@ public struct LibraryView: View {
     @State private var collectionSearchText: String = ""
     @State private var selectedFormatFilter: FormatFilter = .all
     @State private var selectedContractFilter: String? = nil
+    @State private var filterHideFlashing: Bool = false
+    @State private var filterHideAdult: Bool = false
+    @State private var filterHideFlagged: Bool = false
+    @AppStorage("hideFlashingHazards") private var globalHideFlashing: Bool = false
+    @AppStorage("hideAdultContent") private var globalHideAdult: Bool = false
+    @AppStorage("hideFlaggedTokens") private var globalHideFlagged: Bool = false
+
+    private var safetyFilterSignature: String {
+        "\(filterHideFlashing)-\(filterHideAdult)-\(filterHideFlagged)-\(globalHideFlashing)-\(globalHideAdult)-\(globalHideFlagged)"
+    }
     @State private var sortOption: TokenSortOption = .dateAcquired
     @State private var sortDirection: SortDirection = .descending
     @State private var gridSize: Double = 180
@@ -311,11 +325,16 @@ public struct LibraryView: View {
         let snapArtistProfiles = artistProfiles
         let snapFxhash = fxhashProjects
         let snapSidebar = selectedSidebarItem
+        let snapFavorites = favoriteIds
+        let snapBlacklisted = blacklistedIds
         let snapColScope = collectionScope
         let snapSrcScope = sourceScope
         let snapSearch = searchText
         let snapFormat = selectedFormatFilter
         let snapContract = selectedContractFilter
+        let snapHideFlashing = globalHideFlashing || filterHideFlashing
+        let snapHideAdult = globalHideAdult || filterHideAdult
+        let snapHideFlagged = globalHideFlagged || filterHideFlagged
         let snapSort = sortOption
         let snapDir = sortDirection
 
@@ -332,6 +351,10 @@ public struct LibraryView: View {
                 baseTokens = snapTokens.filter { $0.isOwned }
             case .created:
                 baseTokens = snapTokens.filter { $0.isCreated || Self.staticIsTokenCreatedByUser($0, sourceAddresses: sourceAddresses) }
+            case .favorites:
+                baseTokens = snapTokens.filter { snapFavorites.contains($0.id) }
+            case .hidden:
+                baseTokens = snapTokens.filter { snapBlacklisted.contains($0.id) }
             case .collections:
                 baseTokens = snapTokens
             case .customGallery(let gid):
@@ -397,6 +420,17 @@ public struct LibraryView: View {
             if let contractFilter = snapContract, !contractFilter.isEmpty {
                 let lowerFilter = contractFilter.lowercased()
                 baseTokens = baseTokens.filter { $0.contract.lowercased() == lowerFilter }
+            }
+
+            // 4b. Content & Accessibility filters (global + filter-level)
+            if snapHideFlashing || snapHideAdult || snapHideFlagged {
+                baseTokens = baseTokens.filter {
+                    !$0.isHiddenByContentFilters(
+                        hideFlashing: snapHideFlashing,
+                        hideAdult: snapHideAdult,
+                        hideFlagged: snapHideFlagged
+                    )
+                }
             }
 
             if Task.isCancelled { return }
@@ -628,6 +662,36 @@ public struct LibraryView: View {
                     .onTapGesture {
                         selectedSidebarItem = .created
                         selectedContractFilter = nil
+                    }
+
+                    HStack {
+                        Label("Favorites", systemImage: "star")
+                        Spacer()
+                        Text("\(favoriteIds.count)")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                    .tag(LibrarySidebarItem.favorites)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        selectedSidebarItem = .favorites
+                        selectedContractFilter = nil
+                    }
+
+                    if !blacklistedIds.isEmpty || selectedSidebarItem == .hidden {
+                        HStack {
+                            Label("Hidden", systemImage: "eye.slash")
+                            Spacer()
+                            Text("\(blacklistedIds.count)")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                        .tag(LibrarySidebarItem.hidden)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            selectedSidebarItem = .hidden
+                            selectedContractFilter = nil
+                        }
                     }
 
                     HStack {
@@ -887,6 +951,16 @@ public struct LibraryView: View {
             .inspectorColumnWidth(min: 280, ideal: 330, max: 400)
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
+                    Button(action: {
+                        NotificationCenter.default.post(name: Notification.Name("desKTop.openSettings"), object: nil)
+                    }) {
+                        Label("Settings", systemImage: "gearshape")
+                    }
+                    .help("Open Settings (⌘,)")
+                    .keyboardShortcut(",", modifiers: .command)
+                }
+
+                ToolbarItem(placement: .primaryAction) {
                     Button(action: { isInspectorPresented.toggle() }) {
                         Image(systemName: "sidebar.trailing")
                     }
@@ -909,6 +983,7 @@ public struct LibraryView: View {
         }
         .onChange(of: selectedFormatFilter) { _ in updateDisplayedTokens() }
         .onChange(of: selectedContractFilter) { _ in updateDisplayedTokens() }
+        .onChange(of: safetyFilterSignature) { _, _ in updateDisplayedTokens() }
         .onChange(of: sortOption) { _ in updateDisplayedTokens() }
         .onChange(of: sortDirection) { _ in updateDisplayedTokens() }
         .onChange(of: sourceScope) { _ in
@@ -946,6 +1021,28 @@ public struct LibraryView: View {
                 sourceScopeHeader(for: src)
             }
 
+            if case .hidden = selectedSidebarItem, !displayedTokens.isEmpty {
+                HStack(spacing: 12) {
+                    Image(systemName: "eye.slash")
+                        .foregroundColor(.secondary)
+                    Text("\(displayedTokens.count) hidden artwork\(displayedTokens.count == 1 ? "" : "s") excluded from rotation.")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                    Spacer()
+                    Button("Restore All to Rotation") {
+                        Task {
+                            try? await repository.clearBlacklist()
+                            await reloadData(skipNetworkResolve: true)
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(Color.secondary.opacity(0.08))
+            }
+
             // Desktop Rotation Player Header Bar
             desktopRotationPlayerBar
 
@@ -976,12 +1073,31 @@ public struct LibraryView: View {
                                 isSelected: selectedToken?.id == token.id,
                                 isLiveOnDesktop: wallpaperState.liveTokenId == token.id,
                                 isApplyingToDesktop: wallpaperState.loadingTokenId == token.id,
+                                isFavorite: favoriteIds.contains(token.id),
+                                isHidden: blacklistedIds.contains(token.id),
                                 galleries: galleries,
                                 onSelect: {
                                     selectedToken = token
                                 },
                                 onSetAsWallpaper: {
                                     onSetWallpaper(token)
+                                },
+                                onToggleFavorite: {
+                                    Task {
+                                        _ = try? await repository.toggleFavoriteToken(id: token.id)
+                                        await reloadData(skipNetworkResolve: true)
+                                    }
+                                },
+                                onToggleHidden: {
+                                    Task {
+                                        if blacklistedIds.contains(token.id) {
+                                            try? await repository.unblacklistToken(id: token.id)
+                                        } else {
+                                            try? await repository.blacklistToken(id: token.id)
+                                        }
+                                        NotificationCenter.default.post(name: .didChangeActiveRotation, object: nil)
+                                        await reloadData(skipNetworkResolve: true)
+                                    }
                                 },
                                 onAddToGallery: { gid in
                                     Task {
@@ -1096,12 +1212,14 @@ public struct LibraryView: View {
                         .buttonStyle(.link)
                     }
                 } else {
+                    let isTeia = TezosMarketplace.teiaContractAddresses.contains(colKey.lowercased())
                     Button(action: {
-                        if let url = URL(string: "https://objkt.com/collections/\(colKey)") {
+                        let urlString = isTeia ? "https://teia.art" : "https://objkt.com/collections/\(colKey)"
+                        if let url = URL(string: urlString) {
                             NSWorkspace.shared.open(url)
                         }
                     }) {
-                        Label("Collection on objkt", systemImage: "arrow.up.right.square")
+                        Label(isTeia ? "Collection on Teia" : "Collection on objkt", systemImage: "arrow.up.right.square")
                             .font(.caption)
                     }
                     .buttonStyle(.link)
@@ -1409,6 +1527,10 @@ public struct LibraryView: View {
             return .owned
         case .created:
             return .created
+        case .favorites:
+            return .favorites
+        case .hidden:
+            return .allArt
         case .collection(let contract):
             let baseName = contract.hasPrefix("fxhash:") ? String(contract.dropFirst(7)) : resolvedName(for: contract)
             return .collection(contract: contract, displayName: baseName, scope: collectionScope)
@@ -1433,6 +1555,8 @@ public struct LibraryView: View {
             return true
         case (.created, .created):
             return true
+        case (.favorites, .favorites):
+            return true
         case (.collection(let c1, _, let s1), .collection(let c2, _, let s2)):
             return c1.caseInsensitiveCompare(c2) == .orderedSame && s1 == s2
         case (.customGallery(let id1, _), .customGallery(let id2, _)):
@@ -1452,6 +1576,10 @@ public struct LibraryView: View {
             return "Owned Art"
         case .created:
             return "Created Art"
+        case .favorites:
+            return "Favorites"
+        case .hidden:
+            return "Hidden"
         case .collection(let contract):
             let baseName = contract.hasPrefix("fxhash:") ? String(contract.dropFirst(7)) : resolvedName(for: contract)
             return collectionScope == .entireCollection ? "Entire \(baseName)" : "My \(baseName)"
@@ -1486,6 +1614,9 @@ public struct LibraryView: View {
         if selectedFormatFilter != .all {
             crit.formatFilter = selectedFormatFilter.rawValue
         }
+        if filterHideFlashing { crit.excludeFlashingHazards = true }
+        if filterHideAdult { crit.excludeAdultContent = true }
+        if filterHideFlagged { crit.excludeModerationFlagged = true }
         switch selectedSidebarItem {
         case .owned:
             crit.sourceScope = "owned"
@@ -1497,11 +1628,63 @@ public struct LibraryView: View {
             break
         }
 
-        let hasActiveRules = (crit.searchText != nil || crit.formatFilter != nil || crit.collectionKey != nil || crit.sourceScope != nil)
+        let hasActiveRules = (crit.searchText != nil || crit.formatFilter != nil || crit.collectionKey != nil || crit.sourceScope != nil || crit.excludeFlashingHazards == true || crit.excludeAdultContent == true || crit.excludeModerationFlagged == true)
         newGalleryCriteria = hasActiveRules ? crit : nil
         newGalleryType = hasActiveRules ? .smart : .manual
         newGalleryDesc = hasActiveRules ? "Dynamic smart gallery matching \(currentScopeTitle) filters" : "Curated gallery with \(tokensToAddToNewGallery.count) artworks"
         isNewGallerySheetPresented = true
+    }
+
+    private var safetyFilterMenu: some View {
+        let anyActive = filterHideFlashing || filterHideAdult || filterHideFlagged || globalHideFlashing || globalHideAdult || globalHideFlagged
+        return Menu {
+            Button(action: { filterHideFlashing.toggle() }) {
+                Label(
+                    "Hide Flashing Hazards",
+                    systemImage: (filterHideFlashing || globalHideFlashing) ? "checkmark" : "bolt.trianglebadge.exclamationmark"
+                )
+            }
+            .disabled(globalHideFlashing)
+
+            Button(action: { filterHideAdult.toggle() }) {
+                Label(
+                    "Hide Adult / 18+ Content",
+                    systemImage: (filterHideAdult || globalHideAdult) ? "checkmark" : "eye.slash"
+                )
+            }
+            .disabled(globalHideAdult)
+
+            Button(action: { filterHideFlagged.toggle() }) {
+                Label(
+                    "Hide Moderation Flagged",
+                    systemImage: (filterHideFlagged || globalHideFlagged) ? "checkmark" : "flag"
+                )
+            }
+            .disabled(globalHideFlagged)
+
+            if filterHideFlashing || filterHideAdult || filterHideFlagged {
+                Divider()
+                Button("Clear Filter-Level Safety Rules") {
+                    filterHideFlashing = false
+                    filterHideAdult = false
+                    filterHideFlagged = false
+                }
+            }
+        } label: {
+            HStack(spacing: 3) {
+                Image(systemName: anyActive ? "exclamationmark.shield.fill" : "exclamationmark.shield")
+                Text("Safety")
+                    .lineLimit(1)
+            }
+            .font(.system(size: 11))
+            .foregroundColor(anyActive ? .accentColor : .primary)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(anyActive ? Color.accentColor.opacity(0.14) : Color.secondary.opacity(0.10))
+            .cornerRadius(5)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
     }
 
     // MARK: - Subviews: Dedicated Collections Browser
@@ -1671,6 +1854,8 @@ public struct LibraryView: View {
             .menuStyle(.borderlessButton)
             .fixedSize()
 
+            safetyFilterMenu
+
             // Sort Menu (combines sort field & direction)
             Menu {
                 ForEach(TokenSortOption.allCases) { opt in
@@ -1796,6 +1981,8 @@ public struct LibraryView: View {
         case .allArt: return "All Art (\(displayedTokens.count))"
         case .owned: return "Owned Art (\(displayedTokens.count))"
         case .created: return "Created Art (\(displayedTokens.count))"
+        case .favorites: return "Favorites (\(displayedTokens.count))"
+        case .hidden: return "Hidden (\(displayedTokens.count))"
         case .collections: return "Collections (\(filteredCollections.count))"
         case .customGallery(let gid):
             let name = galleries.first(where: { $0.id == gid })?.name ?? "Gallery"
@@ -2050,6 +2237,8 @@ public struct LibraryView: View {
         self.tokens = await repository.getTokens()
         self.galleries = await repository.getGalleries()
         self.objktCurations = await repository.getObjktCurations()
+        self.favoriteIds = await repository.getWhitelist()
+        self.blacklistedIds = await repository.getBlacklist()
         self.activeRotationTarget = await repository.getActiveRotationTarget()
         self.isRotationPaused = await repository.isRotationPaused()
         self.isRotationShuffle = await repository.isRotationShuffle()
@@ -2437,9 +2626,13 @@ struct TokenCardView: View {
     let isSelected: Bool
     let isLiveOnDesktop: Bool
     let isApplyingToDesktop: Bool
+    let isFavorite: Bool
+    let isHidden: Bool
     let galleries: [DesktopGallery]
     let onSelect: () -> Void
     let onSetAsWallpaper: () -> Void
+    let onToggleFavorite: () -> Void
+    let onToggleHidden: () -> Void
     let onAddToGallery: (UUID) -> Void
     let onFilterByCollection: (String) -> Void
     let onRemoveFromCurrentGallery: () -> Void
@@ -2615,6 +2808,14 @@ struct TokenCardView: View {
                 Label("Set as macOS Wallpaper", systemImage: "display")
             }
 
+            Button(action: onToggleFavorite) {
+                Label(isFavorite ? "Remove from Favorites" : "Add to Favorites", systemImage: isFavorite ? "star.slash" : "star")
+            }
+
+            Button(action: onToggleHidden) {
+                Label(isHidden ? "Restore to Rotation" : "Hide from Rotation", systemImage: isHidden ? "eye" : "eye.slash")
+            }
+
             Button(action: {
                 onFilterByCollection(token.contract)
             }) {
@@ -2639,14 +2840,14 @@ struct TokenCardView: View {
 
             Divider()
 
-            Button("View Token on objkt.com") {
-                if let url = URL(string: "https://objkt.com/tokens/\(token.contract)/\(token.tokenId)") {
+            Button("View Token on \(token.marketplace.displayName)") {
+                if let url = token.marketplaceTokenURL {
                     NSWorkspace.shared.open(url)
                 }
             }
 
-            Button("View Collection on objkt.com") {
-                if let url = URL(string: "https://objkt.com/collections/\(token.contract)") {
+            Button("View Collection on \(token.marketplace.displayName)") {
+                if let url = token.marketplaceCollectionURL() {
                     NSWorkspace.shared.open(url)
                 }
             }
