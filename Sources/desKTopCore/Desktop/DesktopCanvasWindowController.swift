@@ -71,6 +71,24 @@ public final class DesktopCanvasWindowController: NSWindowController {
     }
 
     @MainActor
+    public var currentContentView: NSView? {
+        return panel.contentView
+    }
+
+    @MainActor
+    public func setInteractive(_ interactive: Bool) {
+        if interactive {
+            panel.level = .floating
+            panel.ignoresMouseEvents = false
+            panel.makeKeyAndOrderFront(nil)
+        } else {
+            panel.level = NSWindow.Level(Int(CGWindowLevelForKey(.desktopWindow)) + 1)
+            panel.ignoresMouseEvents = true
+            panel.orderFront(nil)
+        }
+    }
+
+    @MainActor
     public func present() {
         panel.orderFront(nil)
         panel.setIsVisible(true)

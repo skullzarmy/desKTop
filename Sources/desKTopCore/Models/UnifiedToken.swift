@@ -113,13 +113,18 @@ public struct UnifiedToken: Identifiable, Hashable, Codable, Sendable {
     public let decimals: Int?
     public let aleatory: AleatoryMetadata?
     public let rawMetadata: [String: String]?
+    public var accessibilityHazards: [String]
+    public var contentRating: String?
+    public var moderationFlag: String?
     public var isOwned: Bool
     public var isCreated: Bool
 
     enum CodingKeys: String, CodingKey {
         case contract, tokenId, name, description, creators, mimeType
         case artifactUri, displayUri, thumbnailUri, formats, attributes
-        case supply, decimals, aleatory, rawMetadata, isOwned, isCreated
+        case supply, decimals, aleatory, rawMetadata
+        case accessibilityHazards, contentRating, moderationFlag
+        case isOwned, isCreated
     }
 
     public init(from decoder: Decoder) throws {
@@ -139,6 +144,9 @@ public struct UnifiedToken: Identifiable, Hashable, Codable, Sendable {
         self.decimals = try container.decodeIfPresent(Int.self, forKey: .decimals)
         self.aleatory = try container.decodeIfPresent(AleatoryMetadata.self, forKey: .aleatory)
         self.rawMetadata = try container.decodeIfPresent([String: String].self, forKey: .rawMetadata)
+        self.accessibilityHazards = try container.decodeIfPresent([String].self, forKey: .accessibilityHazards) ?? []
+        self.contentRating = try container.decodeIfPresent(String.self, forKey: .contentRating)
+        self.moderationFlag = try container.decodeIfPresent(String.self, forKey: .moderationFlag)
         self.isOwned = try container.decodeIfPresent(Bool.self, forKey: .isOwned) ?? true
         self.isCreated = try container.decodeIfPresent(Bool.self, forKey: .isCreated) ?? false
     }
@@ -159,6 +167,9 @@ public struct UnifiedToken: Identifiable, Hashable, Codable, Sendable {
         decimals: Int? = nil,
         aleatory: AleatoryMetadata? = nil,
         rawMetadata: [String: String]? = nil,
+        accessibilityHazards: [String] = [],
+        contentRating: String? = nil,
+        moderationFlag: String? = nil,
         isOwned: Bool = true,
         isCreated: Bool = false
     ) {
@@ -177,8 +188,45 @@ public struct UnifiedToken: Identifiable, Hashable, Codable, Sendable {
         self.decimals = decimals
         self.aleatory = aleatory
         self.rawMetadata = rawMetadata
+        self.accessibilityHazards = accessibilityHazards
+        self.contentRating = contentRating
+        self.moderationFlag = moderationFlag
         self.isOwned = isOwned
         self.isCreated = isCreated
+    }
+
+    public var hasFlashingHazard: Bool {
+        if accessibilityHazards.contains(where: { $0.localizedCaseInsensitiveContains("flash") }) {
+            return true
+        }
+        return attributes.contains { attr in
+            attr.name == "__hazards_" && attr.value.localizedCaseInsensitiveContains("flash")
+        }
+    }
+
+    public var isAdultContent: Bool {
+        if let rating = contentRating?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+           rating == "mature" || rating == "nsfw" || rating == "adult" {
+            return true
+        }
+        return attributes.contains { attr in
+            attr.name == "__nsfw_" && ["true", "1", "yes"].contains(attr.value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+        }
+    }
+
+    public var isModerationFlagged: Bool {
+        guard let flag = moderationFlag?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              !flag.isEmpty else {
+            return false
+        }
+        return flag != "none"
+    }
+
+    public func isHiddenByContentFilters(hideFlashing: Bool, hideAdult: Bool, hideFlagged: Bool) -> Bool {
+        if hideFlashing && hasFlashingHazard { return true }
+        if hideAdult && isAdultContent { return true }
+        if hideFlagged && isModerationFlagged { return true }
+        return false
     }
 
     private static let isoFormatterLock = NSLock()

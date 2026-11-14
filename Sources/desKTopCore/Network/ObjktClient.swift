@@ -112,6 +112,9 @@ public actor ObjktClient {
                 supply
                 decimals
                 timestamp
+                accessibility
+                content_rating
+                flag
                 fa {
                   name
                   short_name
@@ -183,6 +186,9 @@ public actor ObjktClient {
                 thumbnail_uri
                 supply
                 decimals
+                accessibility
+                content_rating
+                flag
                 creators {
                   creator_address
                   holder {
@@ -240,6 +246,9 @@ public actor ObjktClient {
             thumbnail_uri
             supply
             decimals
+            accessibility
+            content_rating
+            flag
             creators {
               creator_address
               holder {
@@ -304,6 +313,9 @@ public actor ObjktClient {
             thumbnail_uri
             supply
             decimals
+            accessibility
+            content_rating
+            flag
             creators {
               creator_address
               holder {
@@ -382,6 +394,13 @@ public actor ObjktClient {
         let thumbnail = dict["thumbnail_uri"] as? String
         let supply = (dict["supply"] as? NSNumber)?.intValue
         let decimals = (dict["decimals"] as? NSNumber)?.intValue
+        let contentRating = dict["content_rating"] as? String
+        let moderationFlag = dict["flag"] as? String
+        var hazards: [String] = []
+        if let a11y = dict["accessibility"] as? [String: Any],
+           let rawHazards = a11y["hazards"] as? [String] {
+            hazards = rawHazards
+        }
 
         // Creators
         var creators: [String] = []
@@ -438,7 +457,90 @@ public actor ObjktClient {
             supply: supply,
             decimals: decimals,
             aleatory: nil,
-            rawMetadata: rawMeta.isEmpty ? nil : rawMeta
+            rawMetadata: rawMeta.isEmpty ? nil : rawMeta,
+            accessibilityHazards: hazards,
+            contentRating: contentRating,
+            moderationFlag: moderationFlag
         )
+    }
+
+    public struct SafetyMetadata: Sendable {
+        public let hazards: [String]
+        public let contentRating: String?
+        public let flag: String?
+    }
+
+    /// Batch-fetches Objkt accessibility hazards, content_rating, and moderation flag for existing tokens.
+    public func fetchSafetyMetadata(for tokens: [(contract: String, tokenId: String)]) async -> [String: SafetyMetadata] {
+        var results: [String: SafetyMetadata] = [:]
+        guard !tokens.isEmpty else { return results }
+
+        let chunkSize = 100
+        for start in stride(from: 0, to: tokens.count, by: chunkSize) {
+            let chunk = Array(tokens[start..<min(start + chunkSize, tokens.count)])
+            let orClauses: [[String: Any]] = chunk.map { item in
+                [
+                    "fa_contract": ["_eq": item.contract],
+                    "token_id": ["_eq": item.tokenId]
+                ]
+            }
+            let query = """
+            query FetchSafetyFlags($where: token_bool_exp!, $limit: Int!) {
+              token(where: $where, limit: $limit) {
+                fa_contract
+                token_id
+                accessibility
+                content_rating
+                flag
+                attributes(where: { attribute: { type: { _eq: "_objktcom" } } }) {
+                  attribute {
+                    name
+                    value
+                  }
+                }
+              }
+            }
+            """
+            let payload: [String: Any] = [
+                "query": query,
+                "variables": [
+                    "where": ["_or": orClauses],
+                    "limit": chunk.count
+                ]
+            ]
+            guard let data = try? await executeGraphQL(payload: payload),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let dataObj = json["data"] as? [String: Any],
+                  let rows = dataObj["token"] as? [[String: Any]] else {
+                continue
+            }
+
+            for row in rows {
+                guard let c = row["fa_contract"] as? String,
+                      let tid = row["token_id"] as? String else { continue }
+                let key = "\(c):\(tid)"
+                var hazards: [String] = []
+                if let a11y = row["accessibility"] as? [String: Any],
+                   let rawHazards = a11y["hazards"] as? [String] {
+                    hazards = rawHazards
+                }
+                var rating = row["content_rating"] as? String
+                if let attrs = row["attributes"] as? [[String: Any]] {
+                    for a in attrs {
+                        guard let attr = a["attribute"] as? [String: Any],
+                              let attrName = attr["name"] as? String else { continue }
+                        let attrVal = "\(attr["value"] ?? "")"
+                        if attrName == "__hazards_" && attrVal.localizedCaseInsensitiveContains("flash") && !hazards.contains("flashing") {
+                            hazards.append("flashing")
+                        } else if attrName == "__nsfw_" && ["true", "1", "yes"].contains(attrVal.lowercased()) && rating == nil {
+                            rating = "mature"
+                        }
+                    }
+                }
+                let flag = row["flag"] as? String
+                results[key] = SafetyMetadata(hazards: hazards, contentRating: rating, flag: flag)
+            }
+        }
+        return results
     }
 }

@@ -35,7 +35,7 @@ def generate_background(scale, out_path):
             title_font = ImageFont.load_default()
 
     # Title header within 660 viewport
-    draw.text((36 * scale, 22 * scale), "desKTop // v1.0.1", fill=(240, 240, 245), font=title_font)
+    draw.text((36 * scale, 22 * scale), "desKTop // v1.0.2", fill=(240, 240, 245), font=title_font)
     
     sub = "NATIVE MACOS COMPANION"
     sub_bbox = draw.textbbox((0, 0), sub, font=mono_font)

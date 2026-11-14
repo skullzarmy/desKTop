@@ -25,6 +25,9 @@ public struct GalleryFilterCriteria: Hashable, Codable, Sendable {
     public var walletScope: WalletFollowScope? // .created vs .owned
     public var sortOption: String?
     public var sortDirection: String?
+    public var excludeFlashingHazards: Bool?
+    public var excludeAdultContent: Bool?
+    public var excludeModerationFlagged: Bool?
 
     public init(
         searchText: String? = nil,
@@ -35,7 +38,10 @@ public struct GalleryFilterCriteria: Hashable, Codable, Sendable {
         targetDomain: String? = nil,
         walletScope: WalletFollowScope? = nil,
         sortOption: String? = nil,
-        sortDirection: String? = nil
+        sortDirection: String? = nil,
+        excludeFlashingHazards: Bool? = nil,
+        excludeAdultContent: Bool? = nil,
+        excludeModerationFlagged: Bool? = nil
     ) {
         self.searchText = searchText
         self.formatFilter = formatFilter
@@ -46,6 +52,9 @@ public struct GalleryFilterCriteria: Hashable, Codable, Sendable {
         self.walletScope = walletScope
         self.sortOption = sortOption
         self.sortDirection = sortDirection
+        self.excludeFlashingHazards = excludeFlashingHazards
+        self.excludeAdultContent = excludeAdultContent
+        self.excludeModerationFlagged = excludeModerationFlagged
     }
 
     /// Evaluates if a given token matches these dynamic filter criteria
@@ -126,6 +135,14 @@ public struct GalleryFilterCriteria: Hashable, Codable, Sendable {
                 let sourceMatch = (token.rawMetadata?["sourceWallet"]?.lowercased() == wallet)
                 if !token.isOwned && !sourceMatch { return false }
             }
+        }
+
+        if token.isHiddenByContentFilters(
+            hideFlashing: excludeFlashingHazards ?? false,
+            hideAdult: excludeAdultContent ?? false,
+            hideFlagged: excludeModerationFlagged ?? false
+        ) {
+            return false
         }
 
         return true
